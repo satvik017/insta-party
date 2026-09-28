@@ -276,12 +276,60 @@ class _HomeScreenState extends State<HomeScreen> {
       final room = await SyncManager.instance.joinParty(roomId: normalizedCode);
       if (room == null) {
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text(
-                'Room not found. Make sure the host has created the room and database is created in Firebase Console.',
+          showDialog(
+            context: context,
+            builder: (ctx) => AlertDialog(
+              backgroundColor: AppTheme.surfaceElevated,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+              title: const Row(
+                children: [
+                  Icon(Icons.cloud_off_rounded, color: Colors.orangeAccent, size: 24),
+                  SizedBox(width: 10),
+                  Text('Room Not Found', style: TextStyle(color: Colors.white, fontSize: 17)),
+                ],
               ),
-              duration: Duration(seconds: 4),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Could not find room "$normalizedCode" on the cloud database.',
+                    style: const TextStyle(color: Colors.white70, fontSize: 13),
+                  ),
+                  const SizedBox(height: 14),
+                  Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: AppTheme.surface,
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: AppTheme.border),
+                    ),
+                    child: const Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'To fix this in Firebase Console:',
+                          style: TextStyle(fontWeight: FontWeight.bold, color: Colors.white, fontSize: 12),
+                        ),
+                        SizedBox(height: 6),
+                        Text(
+                          '1. Open your Firebase project: task-management-d6054\n'
+                          '2. Click Build > Firestore Database (or Realtime Database)\n'
+                          '3. Click "Create Database" and choose "Start in test mode"\n'
+                          '4. Host creates the room, and guest joins with the code!',
+                          style: TextStyle(color: AppTheme.textSecondary, fontSize: 11, height: 1.4),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(ctx),
+                  child: const Text('OK', style: TextStyle(color: AppTheme.instaRed)),
+                ),
+              ],
             ),
           );
         }

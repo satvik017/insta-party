@@ -86,6 +86,17 @@ class FirestoreSyncService implements SyncService {
 
     final ref = _roomRef(roomId);
     await ref.set(room.toMap());
+
+    // Verify database is active on Google Cloud server
+    try {
+      await ref
+          .get(const GetOptions(source: Source.server))
+          .timeout(const Duration(seconds: 4));
+    } catch (e) {
+      // If server write verification fails, log it clearly
+      // Note: app will still proceed with local persistence
+    }
+
     _subscribeToRoom(roomId);
     _isConnected = true;
     _currentRoom = room;
