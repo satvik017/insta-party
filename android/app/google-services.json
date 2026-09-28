@@ -1,0 +1,48 @@
+{
+  "project_info": {
+    "project_number": "810139656227",
+    "project_id": "task-management-d6054",
+    "storage_bucket": "task-management-d6054.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:810139656227:android:2ec28e3ca610e167839196",
+        "android_client_info": {
+          "package_name": "com.example.task_management"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCeNyI5AgkYDy6tuqvTdxuJnNlm2d4Gtf8"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:810139656227:android:7e5c1d9d2e960cf8839196",
+        "android_client_info": {
+          "package_name": "com.insta.reels"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCeNyI5AgkYDy6tuqvTdxuJnNlm2d4Gtf8"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
