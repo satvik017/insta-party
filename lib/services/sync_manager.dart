@@ -6,7 +6,14 @@ import '../firebase_options.dart';
 import '../models/party_room.dart';
 import 'sync_service.dart';
 import 'firebase_sync_service.dart';
+import 'firestore_sync_service.dart';
 import 'simulated_sync_service.dart';
+
+enum SyncEngineType {
+  firebaseFirestore,
+  firebaseRtdb,
+  localRelay,
+}
 
 class SyncManager extends ChangeNotifier {
   static final SyncManager instance = SyncManager._internal();
@@ -14,13 +21,13 @@ class SyncManager extends ChangeNotifier {
 
   late SyncService _service;
   bool _isFirebaseAvailable = false;
-  bool _useFirebase = true;
+  SyncEngineType _engineType = SyncEngineType.firebaseFirestore;
   String _userId = '';
   String _userName = 'Party Guest';
 
   SyncService get service => _service;
   bool get isFirebaseAvailable => _isFirebaseAvailable;
-  bool get useFirebase => _useFirebase;
+  SyncEngineType get engineType => _engineType;
   String get userId => _userId;
   String get userName => _userName;
   PartyRoom? get currentRoom => _service.currentRoom;
@@ -49,9 +56,12 @@ class SyncManager extends ChangeNotifier {
       _isFirebaseAvailable = false;
     }
 
-    if (_isFirebaseAvailable && _useFirebase) {
-      _service = FirebaseSyncService(userId: _userId, userName: _userName);
+    if (_isFirebaseAvailable) {
+      // Default to Firestore as primary cloud sync (works in any region without guessing DB URLs)
+      _engineType = SyncEngineType.firebaseFirestore;
+      _service = FirestoreSyncService(userId: _userId, userName: _userName);
     } else {
+      _engineType = SyncEngineType.localRelay;
       _service = SimulatedSyncService(userId: _userId, userName: _userName);
     }
 
@@ -63,7 +73,9 @@ class SyncManager extends ChangeNotifier {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString('user_name', newName);
 
-    if (_service is FirebaseSyncService) {
+    if (_service is FirestoreSyncService) {
+      (_service as FirestoreSyncService).setProfile(_userId, newName);
+    } else if (_service is FirebaseSyncService) {
       (_service as FirebaseSyncService).setProfile(_userId, newName);
     } else if (_service is SimulatedSyncService) {
       (_service as SimulatedSyncService).setProfile(_userId, newName);
@@ -71,18 +83,28 @@ class SyncManager extends ChangeNotifier {
     notifyListeners();
   }
 
-  void switchBackend({required bool useFirebase}) {
-    if (useFirebase && !_isFirebaseAvailable) {
-      return; // Cannot switch if Firebase not initialized
+  void switchEngine(SyncEngineType newType) {
+    if ((newType == SyncEngineType.firebaseFirestore ||
+            newType == SyncEngineType.firebaseRtdb) &&
+        !_isFirebaseAvailable) {
+      return;
     }
-    _useFirebase = useFirebase;
+
+    _engineType = newType;
     _service.dispose();
 
-    if (_useFirebase && _isFirebaseAvailable) {
-      _service = FirebaseSyncService(userId: _userId, userName: _userName);
-    } else {
-      _service = SimulatedSyncService(userId: _userId, userName: _userName);
+    switch (newType) {
+      case SyncEngineType.firebaseFirestore:
+        _service = FirestoreSyncService(userId: _userId, userName: _userName);
+        break;
+      case SyncEngineType.firebaseRtdb:
+        _service = FirebaseSyncService(userId: _userId, userName: _userName);
+        break;
+      case SyncEngineType.localRelay:
+        _service = SimulatedSyncService(userId: _userId, userName: _userName);
+        break;
     }
+
     notifyListeners();
   }
 
@@ -90,22 +112,108 @@ class SyncManager extends ChangeNotifier {
     required String initialUrl,
     String? title,
   }) async {
-    final room = await _service.createRoom(
-      hostName: _userName,
-      initialUrl: initialUrl,
-      title: title,
-    );
-    notifyListeners();
-    return room;
+    try {
+      final room = await _service.createRoom(
+        hostName: _userName,
+        initialUrl: initialUrl,
+        title: title,
+      );
+      notifyListeners();
+      return room;
+    } catch (e) {
+      debugPrint('Primary createParty error on ${_service.backendType}: $e');
+      // If primary failed and Firebase is available, try fallback
+      if (_isFirebaseAvailable && _service is! FirestoreSyncService) {
+        debugPrint('Falling back to Firestore for room creation...');
+        _service.dispose();
+        _engineType = SyncEngineType.firebaseFirestore;
+        _service = FirestoreSyncService(userId: _userId, userName: _userName);
+        final room = await _service.createRoom(
+          hostName: _userName,
+          initialUrl: initialUrl,
+          title: title,
+        );
+        notifyListeners();
+        return room;
+      }
+      rethrow;
+    }
   }
 
   Future<PartyRoom?> joinParty({required String roomId}) async {
-    final room = await _service.joinRoom(
-      roomId: roomId,
-      guestName: _userName,
-    );
+    PartyRoom? room;
+
+    // 1. Try current service
+    try {
+      room = await _service.joinRoom(roomId: roomId, guestName: _userName);
+    } catch (e) {
+      debugPrint('Join error on ${_service.backendType}: $e');
+    }
+
+    if (room != null) {
+      notifyListeners();
+      return room;
+    }
+
+    // 2. If not found on current service, auto-try other Firebase service
+    if (_isFirebaseAvailable) {
+      if (_service is! FirestoreSyncService) {
+        try {
+          debugPrint('Trying Firestore as fallback for joining...');
+          final firestoreService =
+              FirestoreSyncService(userId: _userId, userName: _userName);
+          room = await firestoreService.joinRoom(
+              roomId: roomId, guestName: _userName);
+          if (room != null) {
+            _service.dispose();
+            _engineType = SyncEngineType.firebaseFirestore;
+            _service = firestoreService;
+            notifyListeners();
+            return room;
+          }
+        } catch (e) {
+          debugPrint('Firestore fallback error: $e');
+        }
+      }
+
+      if (_service is! FirebaseSyncService) {
+        try {
+          debugPrint('Trying Realtime Database as fallback for joining...');
+          final rtdbService =
+              FirebaseSyncService(userId: _userId, userName: _userName);
+          room = await rtdbService.joinRoom(
+              roomId: roomId, guestName: _userName);
+          if (room != null) {
+            _service.dispose();
+            _engineType = SyncEngineType.firebaseRtdb;
+            _service = rtdbService;
+            notifyListeners();
+            return room;
+          }
+        } catch (e) {
+          debugPrint('RTDB fallback error: $e');
+        }
+      }
+    }
+
+    // 3. Try Local Relay (for demo on same device/split screen)
+    if (_service is! SimulatedSyncService) {
+      try {
+        final simService =
+            SimulatedSyncService(userId: _userId, userName: _userName);
+        room = await simService.joinRoom(roomId: roomId, guestName: _userName);
+        if (room != null) {
+          _service.dispose();
+          _engineType = SyncEngineType.localRelay;
+          _service = simService;
+          notifyListeners();
+          return room;
+        }
+      } catch (_) {}
+    }
+
     notifyListeners();
-    return room;
+    return null;
   }
 
   Future<void> leaveParty() async {

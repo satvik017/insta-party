@@ -1,16 +1,17 @@
 import 'dart:async';
-import 'package:flutter/foundation.dart';
-import 'package:firebase_database/firebase_database.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:uuid/uuid.dart';
 import '../models/party_room.dart';
 import 'sync_service.dart';
 
-class FirebaseSyncService implements SyncService {
-  final FirebaseDatabase _database = FirebaseDatabase.instance;
+class FirestoreSyncService implements SyncService {
+  final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   final _uuid = const Uuid();
 
   final _roomController = StreamController<PartyRoom?>.broadcast();
-  StreamSubscription<DatabaseEvent>? _roomSubscription;
+  StreamSubscription<DocumentSnapshot>? _roomSubscription;
+  StreamSubscription<QuerySnapshot>? _chatSubscription;
+  StreamSubscription<QuerySnapshot>? _reactionSubscription;
 
   PartyRoom? _currentRoom;
   String _userId = '';
@@ -18,7 +19,7 @@ class FirebaseSyncService implements SyncService {
   bool _isHost = false;
   bool _isConnected = false;
 
-  FirebaseSyncService({String? userId, String? userName}) {
+  FirestoreSyncService({String? userId, String? userName}) {
     _userId = userId ?? 'user_${DateTime.now().millisecondsSinceEpoch % 10000}';
     _userName = userName ?? 'PartyUser';
   }
@@ -42,14 +43,23 @@ class FirebaseSyncService implements SyncService {
   bool get isConnected => _isConnected;
 
   @override
-  String get backendType => 'Firebase Realtime Database';
+  String get backendType => 'Firebase Cloud Firestore';
 
   void setProfile(String userId, String userName) {
     _userId = userId;
     _userName = userName;
   }
 
-  DatabaseReference _roomRef(String roomId) => _database.ref('party_rooms/$roomId');
+  DocumentReference _roomRef(String roomId) =>
+      _firestore.collection('party_rooms').doc(roomId);
+
+  static String normalizeCode(String code) {
+    final clean = code.trim().toUpperCase();
+    if (!clean.startsWith('SYNC-')) {
+      return 'SYNC-$clean';
+    }
+    return clean;
+  }
 
   @override
   Future<PartyRoom> createRoom({
@@ -83,14 +93,6 @@ class FirebaseSyncService implements SyncService {
     return room;
   }
 
-  static String normalizeCode(String code) {
-    final clean = code.trim().toUpperCase();
-    if (!clean.startsWith('SYNC-')) {
-      return 'SYNC-$clean';
-    }
-    return clean;
-  }
-
   @override
   Future<PartyRoom?> joinRoom({
     required String roomId,
@@ -99,48 +101,31 @@ class FirebaseSyncService implements SyncService {
     _userName = guestName;
     _isHost = false;
 
-    final raw = roomId.trim().toUpperCase();
+    // Check both normalized and raw code
     final normalized = normalizeCode(roomId);
+    var targetId = normalized;
 
-    DatabaseReference targetRef = _roomRef(normalized);
-    DataSnapshot? snapshot;
-    String effectiveRoomId = normalized;
-
-    try {
-      snapshot = await targetRef.get().timeout(const Duration(seconds: 5));
-    } catch (e) {
-      debugPrint('RTDB join error for $normalized: $e');
+    var doc = await _roomRef(targetId).get();
+    if (!doc.exists) {
+      targetId = roomId.trim().toUpperCase();
+      doc = await _roomRef(targetId).get();
     }
 
-    // If not found with normalized prefix, try raw
-    if (snapshot == null || !snapshot.exists || snapshot.value == null) {
-      try {
-        targetRef = _roomRef(raw);
-        snapshot = await targetRef.get().timeout(const Duration(seconds: 5));
-        effectiveRoomId = raw;
-      } catch (e) {
-        debugPrint('RTDB join error for $raw: $e');
-      }
-    }
-
-    if (snapshot == null || !snapshot.exists || snapshot.value == null) {
+    if (!doc.exists || doc.data() == null) {
       return null;
     }
 
-    final rawData = snapshot.value;
-    if (rawData is! Map) return null;
+    final data = Map<String, dynamic>.from(doc.data() as Map);
+    var room = PartyRoom.fromMap(data, roomId: targetId);
 
-    final data = Map<String, dynamic>.from(rawData);
-    var room = PartyRoom.fromMap(data, roomId: effectiveRoomId);
-
-    // Register guest in the room
-    await targetRef.update({
+    // Register guest
+    await _roomRef(targetId).update({
       'guestId': _userId,
       'guestName': guestName,
     });
 
     room = room.copyWith(guestId: _userId, guestName: guestName);
-    _subscribeToRoom(effectiveRoomId);
+    _subscribeToRoom(targetId);
     _isConnected = true;
     _currentRoom = room;
     _roomController.add(room);
@@ -149,24 +134,61 @@ class FirebaseSyncService implements SyncService {
 
   void _subscribeToRoom(String roomId) {
     _roomSubscription?.cancel();
-    _roomSubscription = _roomRef(roomId).onValue.listen((event) {
-      if (event.snapshot.value == null) {
+    _chatSubscription?.cancel();
+    _reactionSubscription?.cancel();
+
+    _roomSubscription = _roomRef(roomId).snapshots().listen((snapshot) {
+      if (!snapshot.exists || snapshot.data() == null) {
         _currentRoom = null;
         _roomController.add(null);
         return;
       }
 
       try {
-        final rawData = event.snapshot.value;
-        if (rawData is Map) {
-          final data = Map<String, dynamic>.from(rawData);
-          final updatedRoom = PartyRoom.fromMap(data, roomId: roomId);
-          _currentRoom = updatedRoom;
-          _roomController.add(updatedRoom);
-        }
+        final data = Map<String, dynamic>.from(snapshot.data() as Map);
+        final updatedRoom = PartyRoom.fromMap(data, roomId: roomId);
+
+        // Keep active local messages and reactions if subcollection hasn't fired yet
+        final currentMessages = _currentRoom?.messages ?? [];
+        final currentReactions = _currentRoom?.activeReactions ?? [];
+
+        _currentRoom = updatedRoom.copyWith(
+          messages: updatedRoom.messages.isNotEmpty ? updatedRoom.messages : currentMessages,
+          activeReactions: currentReactions,
+        );
+        _roomController.add(_currentRoom);
       } catch (e) {
-        // Safe parse fallback
+        // Safe fallback
       }
+    });
+
+    // Listen to messages subcollection
+    _chatSubscription = _roomRef(roomId)
+        .collection('messages')
+        .orderBy('timestamp', descending: false)
+        .snapshots()
+        .listen((query) {
+      if (_currentRoom == null) return;
+      final msgs = query.docs
+          .map((d) => PartyChatMessage.fromMap(d.data()))
+          .toList();
+      _currentRoom = _currentRoom!.copyWith(messages: msgs);
+      _roomController.add(_currentRoom);
+    });
+
+    // Listen to reactions subcollection
+    _reactionSubscription = _roomRef(roomId)
+        .collection('reactions')
+        .orderBy('timestamp', descending: true)
+        .limit(10)
+        .snapshots()
+        .listen((query) {
+      if (_currentRoom == null) return;
+      final reactions = query.docs
+          .map((d) => PartyReaction.fromMap(d.data()))
+          .toList();
+      _currentRoom = _currentRoom!.copyWith(activeReactions: reactions);
+      _roomController.add(_currentRoom);
     });
   }
 
@@ -213,7 +235,7 @@ class FirebaseSyncService implements SyncService {
   @override
   Future<void> sendReaction({required String emoji}) async {
     if (_currentRoom == null) return;
-    final ref = _roomRef(_currentRoom!.roomId).child('reactions');
+    final ref = _roomRef(_currentRoom!.roomId).collection('reactions');
     final reaction = PartyReaction(
       id: _uuid.v4(),
       emoji: emoji,
@@ -221,13 +243,13 @@ class FirebaseSyncService implements SyncService {
       senderName: _userName,
       timestamp: DateTime.now().millisecondsSinceEpoch,
     );
-    await ref.push().set(reaction.toMap());
+    await ref.add(reaction.toMap());
   }
 
   @override
   Future<void> sendChatMessage({required String text}) async {
     if (_currentRoom == null || text.trim().isEmpty) return;
-    final ref = _roomRef(_currentRoom!.roomId).child('messages');
+    final ref = _roomRef(_currentRoom!.roomId).collection('messages');
     final message = PartyChatMessage(
       id: _uuid.v4(),
       senderId: _userId,
@@ -235,7 +257,7 @@ class FirebaseSyncService implements SyncService {
       text: text.trim(),
       timestamp: DateTime.now().millisecondsSinceEpoch,
     );
-    await ref.push().set(message.toMap());
+    await ref.add(message.toMap());
   }
 
   @override
@@ -249,10 +271,8 @@ class FirebaseSyncService implements SyncService {
   Future<void> leaveRoom() async {
     if (_currentRoom != null) {
       if (_isHost) {
-        // If host leaves, can archive or delete room
-        await _roomRef(_currentRoom!.roomId).remove();
+        await _roomRef(_currentRoom!.roomId).delete();
       } else {
-        // If guest leaves, clear guestId
         await _roomRef(_currentRoom!.roomId).update({
           'guestId': null,
           'guestName': null,
@@ -260,6 +280,8 @@ class FirebaseSyncService implements SyncService {
       }
     }
     _roomSubscription?.cancel();
+    _chatSubscription?.cancel();
+    _reactionSubscription?.cancel();
     _currentRoom = null;
     _isConnected = false;
     _roomController.add(null);
@@ -268,6 +290,8 @@ class FirebaseSyncService implements SyncService {
   @override
   void dispose() {
     _roomSubscription?.cancel();
+    _chatSubscription?.cancel();
+    _reactionSubscription?.cancel();
     _roomController.close();
   }
 

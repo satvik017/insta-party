@@ -75,68 +75,158 @@ class _HomeScreenState extends State<HomeScreen> {
             const Text('Sync Backend', style: TextStyle(color: Colors.white, fontSize: 18)),
           ],
         ),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Container(
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: AppTheme.surface,
-                borderRadius: BorderRadius.circular(14),
-                border: Border.all(color: AppTheme.border),
-              ),
-              child: Row(
-                children: [
-                  Icon(
-                    SyncManager.instance.isFirebaseAvailable
-                        ? Icons.check_circle_rounded
-                        : Icons.info_outline_rounded,
-                    color: SyncManager.instance.isFirebaseAvailable ? Colors.greenAccent : AppTheme.instaYellow,
+        content: StatefulBuilder(
+          builder: (context, setDialogState) {
+            return Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: AppTheme.surface,
+                    borderRadius: BorderRadius.circular(14),
+                    border: Border.all(color: AppTheme.border),
                   ),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          SyncManager.instance.service.backendType,
-                          style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.white, fontSize: 13),
+                  child: Row(
+                    children: [
+                      Icon(
+                        SyncManager.instance.isFirebaseAvailable
+                            ? Icons.check_circle_rounded
+                            : Icons.flash_on_rounded,
+                        color: SyncManager.instance.isFirebaseAvailable
+                            ? Colors.greenAccent
+                            : AppTheme.instaYellow,
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              SyncManager.instance.service.backendType,
+                              style: const TextStyle(
+                                  fontWeight: FontWeight.bold,
+                                  color: Colors.white,
+                                  fontSize: 13),
+                            ),
+                            Text(
+                              SyncManager.instance.isFirebaseAvailable
+                                  ? 'Project: task-management-d6054'
+                                  : 'Direct Sync Engine Active',
+                              style: const TextStyle(
+                                  color: AppTheme.textMuted, fontSize: 11),
+                            ),
+                          ],
                         ),
-                        Text(
-                          SyncManager.instance.isFirebaseAvailable
-                              ? 'Connected to Firebase Realtime Database'
-                              : 'Real-time sync engine is active and ready',
-                          style: const TextStyle(color: AppTheme.textMuted, fontSize: 11),
-                        ),
-                      ],
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 14),
+                const Text(
+                  'Select Cloud Sync Engine:',
+                  style: TextStyle(
+                      fontWeight: FontWeight.bold,
+                      color: Colors.white,
+                      fontSize: 13),
+                ),
+                const SizedBox(height: 8),
+                _engineOption(
+                  'Cloud Firestore (Default)',
+                  'Auto-detects project without database URL config',
+                  SyncEngineType.firebaseFirestore,
+                  setDialogState,
+                ),
+                _engineOption(
+                  'Realtime Database (RTDB)',
+                  'Sub-second low latency WebSocket',
+                  SyncEngineType.firebaseRtdb,
+                  setDialogState,
+                ),
+                _engineOption(
+                  'Local / Direct Relay',
+                  'Instant testing for 1-device / split screen',
+                  SyncEngineType.localRelay,
+                  setDialogState,
+                ),
+                const SizedBox(height: 12),
+                Container(
+                  padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(
+                    color: Colors.amber.withValues(alpha: 0.1),
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(color: Colors.amber.withValues(alpha: 0.3)),
+                  ),
+                  child: const Text(
+                    '⚠️ Important: In your Firebase Console, make sure to click "Create Database" under Firestore or Realtime Database in Test Mode.',
+                    style: TextStyle(fontSize: 11, color: Colors.amber, height: 1.3),
+                  ),
+                ),
+              ],
+            );
+          },
+        ),
+        actions: [
+          ElevatedButton(
+            onPressed: () {
+              Navigator.pop(ctx);
+              setState(() {});
+            },
+            style: ElevatedButton.styleFrom(backgroundColor: AppTheme.instaRed),
+            child: const Text('Save & Close'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _engineOption(
+    String title,
+    String subtitle,
+    SyncEngineType type,
+    StateSetter setDialogState,
+  ) {
+    final isSelected = SyncManager.instance.engineType == type;
+    return InkWell(
+      onTap: () {
+        SyncManager.instance.switchEngine(type);
+        setDialogState(() {});
+      },
+      borderRadius: BorderRadius.circular(10),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 4),
+        child: Row(
+          children: [
+            Icon(
+              isSelected
+                  ? Icons.radio_button_checked
+                  : Icons.radio_button_off,
+              color: isSelected ? AppTheme.instaRed : Colors.white38,
+              size: 18,
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    title,
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+                      color: isSelected ? Colors.white : Colors.white70,
                     ),
+                  ),
+                  Text(
+                    subtitle,
+                    style: const TextStyle(fontSize: 10, color: AppTheme.textMuted),
                   ),
                 ],
               ),
             ),
-            const SizedBox(height: 16),
-            const Text(
-              'To connect your Firebase Project:',
-              style: TextStyle(fontWeight: FontWeight.bold, color: Colors.white, fontSize: 13),
-            ),
-            const SizedBox(height: 8),
-            const Text(
-              '1. Download google-services.json from your Firebase Console.\n'
-              '2. Place it into android/app/google-services.json.\n'
-              '3. Enable Firebase Realtime Database in test mode.\n'
-              'The app seamlessly works with Firebase Realtime Database and includes real-time failover.',
-              style: TextStyle(fontSize: 12, color: AppTheme.textSecondary, height: 1.4),
-            ),
           ],
         ),
-        actions: [
-          ElevatedButton(
-            onPressed: () => Navigator.pop(ctx),
-            style: ElevatedButton.styleFrom(backgroundColor: AppTheme.instaRed),
-            child: const Text('Got it'),
-          ),
-        ],
       ),
     );
   }
@@ -180,13 +270,19 @@ class _HomeScreenState extends State<HomeScreen> {
       return;
     }
 
+    final normalizedCode = code.startsWith('SYNC-') ? code : 'SYNC-$code';
     setState(() => _isJoiningParty = true);
     try {
-      final room = await SyncManager.instance.joinParty(roomId: code);
+      final room = await SyncManager.instance.joinParty(roomId: normalizedCode);
       if (room == null) {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Room not found. Check the code or ask the host.')),
+            const SnackBar(
+              content: Text(
+                'Room not found. Make sure the host has created the room and database is created in Firebase Console.',
+              ),
+              duration: Duration(seconds: 4),
+            ),
           );
         }
         return;
