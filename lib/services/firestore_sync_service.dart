@@ -85,17 +85,9 @@ class FirestoreSyncService implements SyncService {
     );
 
     final ref = _roomRef(roomId);
-    await ref.set(room.toMap());
 
-    // Verify database is active on Google Cloud server
-    try {
-      await ref
-          .get(const GetOptions(source: Source.server))
-          .timeout(const Duration(seconds: 4));
-    } catch (e) {
-      // If server write verification fails, log it clearly
-      // Note: app will still proceed with local persistence
-    }
+    // Write room to Firestore — will throw if rules block write or DB not created
+    await ref.set(room.toMap());
 
     _subscribeToRoom(roomId);
     _isConnected = true;
@@ -112,35 +104,50 @@ class FirestoreSyncService implements SyncService {
     _userName = guestName;
     _isHost = false;
 
-    // Check both normalized and raw code
-    final normalized = normalizeCode(roomId);
-    var targetId = normalized;
+    // Try exact code first, then with SYNC- prefix, then without prefix
+    final candidates = [
+      roomId.trim().toUpperCase(),
+      normalizeCode(roomId),
+    ];
 
-    var doc = await _roomRef(targetId).get();
-    if (!doc.exists) {
-      targetId = roomId.trim().toUpperCase();
-      doc = await _roomRef(targetId).get();
+    for (final targetId in candidates.toSet().toList()) {
+      try {
+        final doc = await _roomRef(targetId)
+            .get(const GetOptions(source: Source.server));
+
+        if (!doc.exists || doc.data() == null) continue;
+
+        final data = Map<String, dynamic>.from(doc.data() as Map);
+        var room = PartyRoom.fromMap(data, roomId: targetId);
+
+        // Register this user as guest
+        await _roomRef(targetId).update({
+          'guestId': _userId,
+          'guestName': guestName,
+        });
+
+        room = room.copyWith(guestId: _userId, guestName: guestName);
+        _subscribeToRoom(targetId);
+        _isConnected = true;
+        _currentRoom = room;
+        _roomController.add(room);
+        return room;
+      } catch (e) {
+        // Re-throw permission errors so they're visible to user
+        if (e.toString().contains('PERMISSION_DENIED') ||
+            e.toString().contains('permission-denied')) {
+          throw Exception(
+            'Firebase Firestore permission denied.\n'
+            'Go to Firebase Console > Firestore > Rules and set:\n'
+            '  allow read, write: if true;\n'
+            'Then click Publish.',
+          );
+        }
+        // For other errors, continue trying next candidate
+      }
     }
 
-    if (!doc.exists || doc.data() == null) {
-      return null;
-    }
-
-    final data = Map<String, dynamic>.from(doc.data() as Map);
-    var room = PartyRoom.fromMap(data, roomId: targetId);
-
-    // Register guest
-    await _roomRef(targetId).update({
-      'guestId': _userId,
-      'guestName': guestName,
-    });
-
-    room = room.copyWith(guestId: _userId, guestName: guestName);
-    _subscribeToRoom(targetId);
-    _isConnected = true;
-    _currentRoom = room;
-    _roomController.add(room);
-    return room;
+    return null;
   }
 
   void _subscribeToRoom(String roomId) {

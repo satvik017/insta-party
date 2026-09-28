@@ -112,32 +112,14 @@ class SyncManager extends ChangeNotifier {
     required String initialUrl,
     String? title,
   }) async {
-    try {
-      final room = await _service.createRoom(
-        hostName: _userName,
-        initialUrl: initialUrl,
-        title: title,
-      );
-      notifyListeners();
-      return room;
-    } catch (e) {
-      debugPrint('Primary createParty error on ${_service.backendType}: $e');
-      // If primary failed and Firebase is available, try fallback
-      if (_isFirebaseAvailable && _service is! FirestoreSyncService) {
-        debugPrint('Falling back to Firestore for room creation...');
-        _service.dispose();
-        _engineType = SyncEngineType.firebaseFirestore;
-        _service = FirestoreSyncService(userId: _userId, userName: _userName);
-        final room = await _service.createRoom(
-          hostName: _userName,
-          initialUrl: initialUrl,
-          title: title,
-        );
-        notifyListeners();
-        return room;
-      }
-      rethrow;
-    }
+    // Directly call the service — errors (e.g. permission denied) bubble up to UI
+    final room = await _service.createRoom(
+      hostName: _userName,
+      initialUrl: initialUrl,
+      title: title,
+    );
+    notifyListeners();
+    return room;
   }
 
   Future<PartyRoom?> joinParty({required String roomId}) async {
