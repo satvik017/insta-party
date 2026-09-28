@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_database/firebase_database.dart';
 import '../models/reel_item.dart';
 import '../services/sync_manager.dart';
 import '../theme/app_theme.dart';
@@ -63,17 +64,36 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  // Test a direct Firestore write and return result message
+  // Test direct RTDB write and return result message
   Future<String> _testFirestoreWrite() async {
+    final results = <String>[];
+
+    // Test 1: Realtime Database
+    try {
+      final rtdb = FirebaseDatabase.instance;
+      final ref = rtdb.ref('_connection_test/ping');
+      await ref.set({'ts': DateTime.now().millisecondsSinceEpoch})
+          .timeout(const Duration(seconds: 6));
+      await ref.remove();
+      results.add('✅ Realtime DB: Write succeeded!');
+    } catch (e) {
+      results.add('❌ Realtime DB: $e');
+    }
+
+    // Test 2: Firestore
     try {
       final db = FirebaseFirestore.instance;
       final testRef = db.collection('_connection_test').doc('ping');
-      await testRef.set({'ts': DateTime.now().millisecondsSinceEpoch});
+      await testRef
+          .set({'ts': DateTime.now().millisecondsSinceEpoch})
+          .timeout(const Duration(seconds: 6));
       await testRef.delete();
-      return '✅ Firestore write & delete succeeded! Database is working.';
+      results.add('✅ Firestore: Write succeeded!');
     } catch (e) {
-      return '❌ Firestore error:\n$e';
+      results.add('❌ Firestore: $e');
     }
+
+    return results.join('\n\n');
   }
 
   void _showFirebaseInfoDialog() {

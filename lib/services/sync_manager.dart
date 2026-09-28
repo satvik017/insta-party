@@ -57,9 +57,11 @@ class SyncManager extends ChangeNotifier {
     }
 
     if (_isFirebaseAvailable) {
-      // Default to Firestore as primary cloud sync (works in any region without guessing DB URLs)
-      _engineType = SyncEngineType.firebaseFirestore;
-      _service = FirestoreSyncService(userId: _userId, userName: _userName);
+      // Default to RTDB — its URL is pre-configured in firebase_options.dart
+      // and RTDB is typically created when a Firebase project is initialized.
+      // Firestore requires manual database creation in the console.
+      _engineType = SyncEngineType.firebaseRtdb;
+      _service = FirebaseSyncService(userId: _userId, userName: _userName);
     } else {
       _engineType = SyncEngineType.localRelay;
       _service = SimulatedSyncService(userId: _userId, userName: _userName);

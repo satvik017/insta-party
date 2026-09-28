@@ -75,6 +75,7 @@ class FirebaseSyncService implements SyncService {
     );
 
     final ref = _roomRef(roomId);
+    // Will throw PERMISSION_DENIED if RTDB rules block writes
     await ref.set(room.toMap());
     _subscribeToRoom(roomId);
     _isConnected = true;
@@ -99,52 +100,57 @@ class FirebaseSyncService implements SyncService {
     _userName = guestName;
     _isHost = false;
 
-    final raw = roomId.trim().toUpperCase();
-    final normalized = normalizeCode(roomId);
+    // Try normalized (SYNC-XXXX) first, then raw code
+    final candidates = [
+      normalizeCode(roomId),
+      roomId.trim().toUpperCase(),
+    ];
 
-    DatabaseReference targetRef = _roomRef(normalized);
-    DataSnapshot? snapshot;
-    String effectiveRoomId = normalized;
-
-    try {
-      snapshot = await targetRef.get().timeout(const Duration(seconds: 5));
-    } catch (e) {
-      debugPrint('RTDB join error for $normalized: $e');
-    }
-
-    // If not found with normalized prefix, try raw
-    if (snapshot == null || !snapshot.exists || snapshot.value == null) {
+    for (final candidateId in candidates.toSet().toList()) {
       try {
-        targetRef = _roomRef(raw);
-        snapshot = await targetRef.get().timeout(const Duration(seconds: 5));
-        effectiveRoomId = raw;
+        final snapshot = await _roomRef(candidateId)
+            .get()
+            .timeout(const Duration(seconds: 8));
+
+        if (!snapshot.exists || snapshot.value == null) continue;
+
+        final rawData = snapshot.value;
+        final Map<String, dynamic> data;
+        if (rawData is Map) {
+          data = Map<String, dynamic>.from(rawData);
+        } else {
+          continue;
+        }
+
+        var room = PartyRoom.fromMap(data, roomId: candidateId);
+        await _roomRef(candidateId).update({
+          'guestId': _userId,
+          'guestName': guestName,
+        });
+        room = room.copyWith(guestId: _userId, guestName: guestName);
+        _subscribeToRoom(candidateId);
+        _isConnected = true;
+        _currentRoom = room;
+        _roomController.add(room);
+        return room;
       } catch (e) {
-        debugPrint('RTDB join error for $raw: $e');
+        final errStr = e.toString();
+        // Re-throw permission errors so the user sees them
+        if (errStr.contains('permission_denied') ||
+            errStr.contains('PERMISSION_DENIED') ||
+            errStr.contains('Permission denied')) {
+          throw Exception(
+            'Firebase RTDB permission denied.\n'
+            'Go to Firebase Console > Realtime Database > Rules and set:\n'
+            '{"rules": {".read": true, ".write": true}}\n'
+            'Then click Publish.',
+          );
+        }
+        debugPrint('RTDB join error for $candidateId: $e');
       }
     }
 
-    if (snapshot == null || !snapshot.exists || snapshot.value == null) {
-      return null;
-    }
-
-    final rawData = snapshot.value;
-    if (rawData is! Map) return null;
-
-    final data = Map<String, dynamic>.from(rawData);
-    var room = PartyRoom.fromMap(data, roomId: effectiveRoomId);
-
-    // Register guest in the room
-    await targetRef.update({
-      'guestId': _userId,
-      'guestName': guestName,
-    });
-
-    room = room.copyWith(guestId: _userId, guestName: guestName);
-    _subscribeToRoom(effectiveRoomId);
-    _isConnected = true;
-    _currentRoom = room;
-    _roomController.add(room);
-    return room;
+    return null;
   }
 
   void _subscribeToRoom(String roomId) {
