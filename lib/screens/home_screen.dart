@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 import '../models/reel_item.dart';
 import '../services/sync_manager.dart';
 import '../theme/app_theme.dart';
@@ -62,6 +63,19 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
+  // Test a direct Firestore write and return result message
+  Future<String> _testFirestoreWrite() async {
+    try {
+      final db = FirebaseFirestore.instance;
+      final testRef = db.collection('_connection_test').doc('ping');
+      await testRef.set({'ts': DateTime.now().millisecondsSinceEpoch});
+      await testRef.delete();
+      return '✅ Firestore write & delete succeeded! Database is working.';
+    } catch (e) {
+      return '❌ Firestore error:\n$e';
+    }
+  }
+
   void _showFirebaseInfoDialog() {
     showDialog(
       context: context,
@@ -77,93 +91,165 @@ class _HomeScreenState extends State<HomeScreen> {
         ),
         content: StatefulBuilder(
           builder: (context, setDialogState) {
-            return Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Container(
-                  padding: const EdgeInsets.all(12),
-                  decoration: BoxDecoration(
-                    color: AppTheme.surface,
-                    borderRadius: BorderRadius.circular(14),
-                    border: Border.all(color: AppTheme.border),
-                  ),
-                  child: Row(
-                    children: [
-                      Icon(
-                        SyncManager.instance.isFirebaseAvailable
-                            ? Icons.check_circle_rounded
-                            : Icons.flash_on_rounded,
-                        color: SyncManager.instance.isFirebaseAvailable
-                            ? Colors.greenAccent
-                            : AppTheme.instaYellow,
+            String testResult = '';
+            bool isTesting = false;
+
+            return StatefulBuilder(
+              builder: (ctx2, setInner) {
+                return Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: AppTheme.surface,
+                        borderRadius: BorderRadius.circular(14),
+                        border: Border.all(color: AppTheme.border),
                       ),
-                      const SizedBox(width: 10),
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              SyncManager.instance.service.backendType,
-                              style: const TextStyle(
-                                  fontWeight: FontWeight.bold,
-                                  color: Colors.white,
-                                  fontSize: 13),
+                      child: Row(
+                        children: [
+                          Icon(
+                            SyncManager.instance.isFirebaseAvailable
+                                ? Icons.check_circle_rounded
+                                : Icons.flash_on_rounded,
+                            color: SyncManager.instance.isFirebaseAvailable
+                                ? Colors.greenAccent
+                                : AppTheme.instaYellow,
+                          ),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  SyncManager.instance.service.backendType,
+                                  style: const TextStyle(
+                                      fontWeight: FontWeight.bold,
+                                      color: Colors.white,
+                                      fontSize: 13),
+                                ),
+                                Text(
+                                  SyncManager.instance.isFirebaseAvailable
+                                      ? 'Project: task-management-d6054'
+                                      : 'Direct Sync Engine Active',
+                                  style: const TextStyle(
+                                      color: AppTheme.textMuted, fontSize: 11),
+                                ),
+                              ],
                             ),
-                            Text(
-                              SyncManager.instance.isFirebaseAvailable
-                                  ? 'Project: task-management-d6054'
-                                  : 'Direct Sync Engine Active',
-                              style: const TextStyle(
-                                  color: AppTheme.textMuted, fontSize: 11),
-                            ),
-                          ],
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+
+                    // ── Test Firestore button ──
+                    SizedBox(
+                      width: double.infinity,
+                      child: ElevatedButton.icon(
+                        icon: isTesting
+                            ? const SizedBox(
+                                width: 14,
+                                height: 14,
+                                child: CircularProgressIndicator(
+                                    strokeWidth: 2, color: Colors.white))
+                            : const Icon(Icons.wifi_tethering, size: 16),
+                        label: Text(isTesting ? 'Testing...' : 'Test Firestore Write'),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.blueAccent,
+                          padding: const EdgeInsets.symmetric(vertical: 10),
+                          textStyle: const TextStyle(fontSize: 12),
                         ),
+                        onPressed: isTesting
+                            ? null
+                            : () async {
+                                setInner(() {
+                                  isTesting = true;
+                                  testResult = '';
+                                });
+                                final result = await _testFirestoreWrite();
+                                setInner(() {
+                                  isTesting = false;
+                                  testResult = result;
+                                });
+                              },
                       ),
-                    ],
-                  ),
-                ),
-                const SizedBox(height: 14),
-                const Text(
-                  'Select Cloud Sync Engine:',
-                  style: TextStyle(
-                      fontWeight: FontWeight.bold,
-                      color: Colors.white,
-                      fontSize: 13),
-                ),
-                const SizedBox(height: 8),
-                _engineOption(
-                  'Cloud Firestore (Default)',
-                  'Auto-detects project without database URL config',
-                  SyncEngineType.firebaseFirestore,
-                  setDialogState,
-                ),
-                _engineOption(
-                  'Realtime Database (RTDB)',
-                  'Sub-second low latency WebSocket',
-                  SyncEngineType.firebaseRtdb,
-                  setDialogState,
-                ),
-                _engineOption(
-                  'Local / Direct Relay',
-                  'Instant testing for 1-device / split screen',
-                  SyncEngineType.localRelay,
-                  setDialogState,
-                ),
-                const SizedBox(height: 12),
-                Container(
-                  padding: const EdgeInsets.all(10),
-                  decoration: BoxDecoration(
-                    color: Colors.amber.withValues(alpha: 0.1),
-                    borderRadius: BorderRadius.circular(10),
-                    border: Border.all(color: Colors.amber.withValues(alpha: 0.3)),
-                  ),
-                  child: const Text(
-                    '⚠️ Important: In your Firebase Console, make sure to click "Create Database" under Firestore or Realtime Database in Test Mode.',
-                    style: TextStyle(fontSize: 11, color: Colors.amber, height: 1.3),
-                  ),
-                ),
-              ],
+                    ),
+
+                    if (testResult.isNotEmpty) ...
+                      [
+                        const SizedBox(height: 8),
+                        Container(
+                          padding: const EdgeInsets.all(10),
+                          decoration: BoxDecoration(
+                            color: testResult.startsWith('✅')
+                                ? Colors.green.withValues(alpha: 0.15)
+                                : Colors.red.withValues(alpha: 0.15),
+                            borderRadius: BorderRadius.circular(10),
+                            border: Border.all(
+                              color: testResult.startsWith('✅')
+                                  ? Colors.greenAccent.withValues(alpha: 0.4)
+                                  : Colors.redAccent.withValues(alpha: 0.4),
+                            ),
+                          ),
+                          child: SelectableText(
+                            testResult,
+                            style: TextStyle(
+                              fontSize: 11,
+                              color: testResult.startsWith('✅')
+                                  ? Colors.greenAccent
+                                  : Colors.redAccent,
+                              height: 1.4,
+                            ),
+                          ),
+                        ),
+                      ],
+
+                    const SizedBox(height: 14),
+                    const Text(
+                      'Select Cloud Sync Engine:',
+                      style: TextStyle(
+                          fontWeight: FontWeight.bold,
+                          color: Colors.white,
+                          fontSize: 13),
+                    ),
+                    const SizedBox(height: 8),
+                    _engineOption(
+                      'Cloud Firestore (Default)',
+                      'Auto-detects project without database URL config',
+                      SyncEngineType.firebaseFirestore,
+                      setDialogState,
+                    ),
+                    _engineOption(
+                      'Realtime Database (RTDB)',
+                      'Sub-second low latency WebSocket',
+                      SyncEngineType.firebaseRtdb,
+                      setDialogState,
+                    ),
+                    _engineOption(
+                      'Local / Direct Relay',
+                      'Instant testing for 1-device / split screen',
+                      SyncEngineType.localRelay,
+                      setDialogState,
+                    ),
+                    const SizedBox(height: 12),
+                    Container(
+                      padding: const EdgeInsets.all(10),
+                      decoration: BoxDecoration(
+                        color: Colors.amber.withValues(alpha: 0.1),
+                        borderRadius: BorderRadius.circular(10),
+                        border:
+                            Border.all(color: Colors.amber.withValues(alpha: 0.3)),
+                      ),
+                      child: const Text(
+                        '⚠️ Important: In your Firebase Console, make sure to click "Create Database" under Firestore in Test Mode.',
+                        style: TextStyle(fontSize: 11, color: Colors.amber, height: 1.3),
+                      ),
+                    ),
+                  ],
+                );
+              },
             );
           },
         ),
@@ -231,6 +317,54 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
+  // Show a persistent dialog with the full error text
+  void _showErrorDialog(String title, String error) {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppTheme.surfaceElevated,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: Row(
+          children: [
+            const Icon(Icons.error_outline_rounded,
+                color: Colors.redAccent, size: 24),
+            const SizedBox(width: 8),
+            Expanded(
+                child: Text(title,
+                    style: const TextStyle(
+                        color: Colors.white, fontSize: 16))),
+          ],
+        ),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              SelectableText(
+                error,
+                style: const TextStyle(
+                    color: Colors.redAccent, fontSize: 12, height: 1.5),
+              ),
+              const SizedBox(height: 12),
+              const Text(
+                'Tip: Tap the cloud icon on the home screen > "Test Firestore Write" to diagnose.',
+                style: TextStyle(
+                    color: Colors.white54, fontSize: 11, height: 1.4),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('OK',
+                style: TextStyle(color: AppTheme.instaRed)),
+          ),
+        ],
+      ),
+    );
+  }
+
   Future<void> _startHostParty([String? reelUrl, String? title]) async {
     setState(() => _isCreatingParty = true);
     try {
@@ -252,9 +386,7 @@ class _HomeScreenState extends State<HomeScreen> {
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Failed to start party: $e')),
-        );
+        _showErrorDialog('Failed to Create Room', e.toString());
       }
     } finally {
       if (mounted) setState(() => _isCreatingParty = false);
