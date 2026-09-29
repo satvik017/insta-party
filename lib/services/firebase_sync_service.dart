@@ -1,12 +1,21 @@
 import 'dart:async';
 import 'package:flutter/foundation.dart';
+import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_database/firebase_database.dart';
 import 'package:uuid/uuid.dart';
 import '../models/party_room.dart';
 import 'sync_service.dart';
 
+// Explicit RTDB URL — must match databaseURL in firebase_options.dart
+const _kRtdbUrl =
+    'https://task-management-d6054-default-rtdb.firebaseio.com';
+
 class FirebaseSyncService implements SyncService {
-  final FirebaseDatabase _database = FirebaseDatabase.instance;
+  // Use instanceFor with explicit URL so the correct database is always used
+  final FirebaseDatabase _database = FirebaseDatabase.instanceFor(
+    app: Firebase.app(),
+    databaseURL: _kRtdbUrl,
+  );
   final _uuid = const Uuid();
 
   final _roomController = StreamController<PartyRoom?>.broadcast();
@@ -75,8 +84,10 @@ class FirebaseSyncService implements SyncService {
     );
 
     final ref = _roomRef(roomId);
+    debugPrint('[RTDB] Writing room $roomId to $_kRtdbUrl/party_rooms/$roomId');
     // Will throw PERMISSION_DENIED if RTDB rules block writes
     await ref.set(room.toMap());
+    debugPrint('[RTDB] Room $roomId written successfully!');
     _subscribeToRoom(roomId);
     _isConnected = true;
     _currentRoom = room;

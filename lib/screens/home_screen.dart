@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_database/firebase_database.dart';
 import '../models/reel_item.dart';
 import '../services/sync_manager.dart';
@@ -68,9 +69,13 @@ class _HomeScreenState extends State<HomeScreen> {
   Future<String> _testFirestoreWrite() async {
     final results = <String>[];
 
-    // Test 1: Realtime Database
+    // Test 1: Realtime Database (explicit URL to match FirebaseSyncService)
     try {
-      final rtdb = FirebaseDatabase.instance;
+      final rtdb = FirebaseDatabase.instanceFor(
+        app: Firebase.app(),
+        databaseURL:
+            'https://task-management-d6054-default-rtdb.firebaseio.com',
+      );
       final ref = rtdb.ref('_connection_test/ping');
       await ref.set({'ts': DateTime.now().millisecondsSinceEpoch})
           .timeout(const Duration(seconds: 6));
