@@ -15,6 +15,7 @@ class SyncedInstaWebview extends StatefulWidget {
   final String currentUserId;
   final bool isHost;
   final Function(bool isPlaying, double position)? onLocalPlaybackChanged;
+  final Function(String newUrl, String title)? onReelChanged;
   final VoidCallback? onVideoLoaded;
 
   const SyncedInstaWebview({
@@ -27,6 +28,7 @@ class SyncedInstaWebview extends StatefulWidget {
     required this.currentUserId,
     required this.isHost,
     this.onLocalPlaybackChanged,
+    this.onReelChanged,
     this.onVideoLoaded,
   });
 
@@ -160,6 +162,50 @@ class SyncedInstaWebviewState extends State<SyncedInstaWebview> {
           window.reelSync.bindEvents();
         }
       }, 1000);
+
+      // Real-time URL & Navigation watcher (SPA routing & swipe in Instagram)
+      var lastReportedUrl = window.location.href;
+      function checkUrlChange() {
+        try {
+          var cur = window.location.href;
+          if (cur && cur !== lastReportedUrl) {
+            lastReportedUrl = cur;
+            if (window.ReelSyncBridge) {
+              window.ReelSyncBridge.postMessage(JSON.stringify({
+                type: 'url_changed',
+                url: cur
+              }));
+            }
+          }
+        } catch(e) {}
+      }
+
+      // Intercept history.pushState & replaceState (used by Instagram's React router on swipe)
+      if (!history._reelSyncHooked) {
+        history._reelSyncHooked = true;
+        var _origPush = history.pushState;
+        if (_origPush) {
+          history.pushState = function() {
+            var res = _origPush.apply(this, arguments);
+            setTimeout(checkUrlChange, 50);
+            return res;
+          };
+        }
+        var _origReplace = history.replaceState;
+        if (_origReplace) {
+          history.replaceState = function() {
+            var res = _origReplace.apply(this, arguments);
+            setTimeout(checkUrlChange, 50);
+            return res;
+          };
+        }
+        window.addEventListener('popstate', function() {
+          setTimeout(checkUrlChange, 50);
+        });
+        window.addEventListener('hashchange', checkUrlChange);
+      }
+
+      setInterval(checkUrlChange, 400);
     })();
   ''';
 
@@ -186,6 +232,11 @@ class SyncedInstaWebviewState extends State<SyncedInstaWebview> {
       )
       ..setNavigationDelegate(
         NavigationDelegate(
+          onUrlChange: (UrlChange change) {
+            if (change.url != null && change.url!.isNotEmpty) {
+              _handleUrlChanged(change.url!);
+            }
+          },
           onProgress: (int progress) {
             if (mounted) {
               setState(() {
@@ -199,6 +250,7 @@ class SyncedInstaWebviewState extends State<SyncedInstaWebview> {
                 _isLoading = true;
               });
             }
+            _handleUrlChanged(url);
           },
           onPageFinished: (String url) async {
             if (mounted) {
@@ -209,6 +261,7 @@ class SyncedInstaWebviewState extends State<SyncedInstaWebview> {
             await _injectSyncScript();
             widget.onVideoLoaded?.call();
             _applySyncState();
+            _handleUrlChanged(url);
           },
         ),
       );
@@ -272,6 +325,14 @@ class SyncedInstaWebviewState extends State<SyncedInstaWebview> {
       final type = data['type'] as String?;
       final time = (data['time'] as num?)?.toDouble() ?? 0.0;
 
+      if (type == 'url_changed') {
+        final url = data['url'] as String?;
+        if (url != null && url.isNotEmpty) {
+          _handleUrlChanged(url);
+        }
+        return;
+      }
+
       // Always report local video interactions to Firebase
       // (skip only if currently handling via overlay controls to avoid double-fire)
       if (!_isLocallyInteracting) {
@@ -286,6 +347,44 @@ class SyncedInstaWebviewState extends State<SyncedInstaWebview> {
     } catch (e) {
       debugPrint('Bridge message parse error: $e');
     }
+  }
+
+  void _handleUrlChanged(String url) {
+    if (!mounted) return;
+
+    // Check if the URL is an Instagram reel, video, or post
+    final shortcode = ReelItem.extractShortcode(url);
+    if (shortcode != null && shortcode.isNotEmpty) {
+      final cleanReelUrl = 'https://www.instagram.com/reel/$shortcode/';
+      final currentShortcode = ReelItem.extractShortcode(widget.reelUrl);
+
+      // If user navigated or swiped to a different reel/post
+      if (shortcode != currentShortcode) {
+        debugPrint('[Sync] Webview navigated to new reel shortcode: $shortcode (was $currentShortcode)');
+        _currentLoadedUrl = cleanReelUrl;
+        widget.onReelChanged?.call(cleanReelUrl, 'Instagram Reel ($shortcode)');
+      }
+    }
+  }
+
+  /// Sync whatever page the webview is currently displaying to the partner
+  Future<String?> syncCurrentPageToPartner() async {
+    try {
+      final res = await _controller.runJavaScriptReturningResult('window.location.href');
+      final currentUrl = res.toString().replaceAll('"', '').trim();
+      if (currentUrl.isNotEmpty && currentUrl.startsWith('http')) {
+        final shortcode = ReelItem.extractShortcode(currentUrl);
+        final syncUrl = shortcode != null
+            ? 'https://www.instagram.com/reel/$shortcode/'
+            : currentUrl;
+        final title = shortcode != null ? 'Instagram Reel ($shortcode)' : 'Instagram Page';
+        widget.onReelChanged?.call(syncUrl, title);
+        return syncUrl;
+      }
+    } catch (e) {
+      debugPrint('[Sync] Error syncing current page: $e');
+    }
+    return null;
   }
 
   void _notifyPlaybackChanged(bool isPlaying, double position) {
@@ -306,12 +405,19 @@ class SyncedInstaWebviewState extends State<SyncedInstaWebview> {
         : ReelItem.formatToDirectUrl(widget.reelUrl);
 
     if (targetUrl != _currentLoadedUrl) {
-      _currentLoadedUrl = targetUrl;
-      setState(() {
-        _isLoading = true;
-      });
-      _controller.loadRequest(Uri.parse(targetUrl));
-      return;
+      final newCode = ReelItem.extractShortcode(widget.reelUrl);
+      final curCode = ReelItem.extractShortcode(_currentLoadedUrl);
+      if (newCode != null && curCode != null && newCode == curCode) {
+        // Same reel already displayed, do not reload
+        _currentLoadedUrl = targetUrl;
+      } else {
+        _currentLoadedUrl = targetUrl;
+        setState(() {
+          _isLoading = true;
+        });
+        _controller.loadRequest(Uri.parse(targetUrl));
+        return;
+      }
     }
 
     // If change was made by the partner (not me), synchronize playback

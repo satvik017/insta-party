@@ -18,8 +18,8 @@ class ReelItem {
   /// Extracts the Instagram shortcode from any format
   static String? extractShortcode(String url) {
     final clean = url.trim();
-    // Match /reel/CODE/ or /reels/CODE/ or /p/CODE/
-    final regExp = RegExp(r'(?:reel|reels|p)\/([A-Za-z0-9_-]+)');
+    // Match /reel/CODE/ or /reels/CODE/ or /p/CODE/ or /tv/CODE/
+    final regExp = RegExp(r'(?:reel|reels|p|tv)\/([A-Za-z0-9_-]+)');
     final match = regExp.firstMatch(clean);
     if (match != null && match.groupCount >= 1) {
       return match.group(1);

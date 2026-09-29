@@ -79,6 +79,57 @@ class _WatchPartyScreenState extends State<WatchPartyScreen> {
     _webviewKey.currentState?.triggerSeek(newTime);
   }
 
+  void _handleWebviewReelChanged(String newUrl, String title) {
+    if (newUrl != _room.currentReelUrl) {
+      debugPrint('[WatchParty] Webview changed reel to $newUrl');
+      SyncManager.instance.service.changeReel(
+        newUrl: newUrl,
+        title: title,
+      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Row(
+              children: [
+                const Icon(Icons.share_rounded, color: Colors.white, size: 18),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    'Synced reel with partner!',
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+              ],
+            ),
+            duration: const Duration(seconds: 2),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+    }
+  }
+
+  Future<void> _syncCurrentPage() async {
+    final syncedUrl = await _webviewKey.currentState?.syncCurrentPageToPartner();
+    if (mounted && syncedUrl != null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Row(
+            children: [
+              const Icon(Icons.check_circle_rounded, color: Colors.greenAccent, size: 18),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text('Broadcasting page to partner...', overflow: TextOverflow.ellipsis),
+              ),
+            ],
+          ),
+          duration: const Duration(seconds: 2),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    }
+  }
+
   void _nextCuratedReel() {
     final reels = ReelItem.defaultCuratedReels;
     _currentCuratedIndex = (_currentCuratedIndex + 1) % reels.length;
@@ -152,8 +203,24 @@ class _WatchPartyScreenState extends State<WatchPartyScreen> {
             _detailRow('Guest', _room.guestName ?? 'Waiting to join...'),
             const SizedBox(height: 8),
             _detailRow('Sync Engine', SyncManager.instance.service.backendType),
+            const Divider(color: AppTheme.border, height: 20),
+            SizedBox(
+              width: double.infinity,
+              child: ElevatedButton.icon(
+                icon: const Icon(Icons.sync_alt_rounded, size: 16),
+                label: const Text('Sync Current Page to Party', style: TextStyle(fontSize: 12)),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: AppTheme.instaRed,
+                  padding: const EdgeInsets.symmetric(vertical: 8),
+                ),
+                onPressed: () {
+                  Navigator.pop(ctx);
+                  _syncCurrentPage();
+                },
+              ),
+            ),
             if (SyncManager.instance.isHost) ...[
-              const Divider(color: AppTheme.border, height: 24),
+              const Divider(color: AppTheme.border, height: 20),
               Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
@@ -287,6 +354,7 @@ class _WatchPartyScreenState extends State<WatchPartyScreen> {
                       currentUserId: SyncManager.instance.userId,
                       isHost: isHost,
                       onLocalPlaybackChanged: _handleLocalPlaybackChanged,
+                      onReelChanged: _handleWebviewReelChanged,
                     ),
                   ),
                 ),
@@ -350,17 +418,35 @@ class _WatchPartyScreenState extends State<WatchPartyScreen> {
                           ),
                         ),
 
-                        // Details / Settings
-                        Container(
-                          decoration: BoxDecoration(
-                            color: Colors.black54,
-                            shape: BoxShape.circle,
-                            border: Border.all(color: Colors.white12),
-                          ),
-                          child: IconButton(
-                            icon: const Icon(Icons.more_vert_rounded, color: Colors.white, size: 20),
-                            onPressed: _showRoomDetailsModal,
-                          ),
+                        // Actions: Quick Sync + Details / Settings
+                        Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Container(
+                              decoration: BoxDecoration(
+                                color: Colors.black54,
+                                shape: BoxShape.circle,
+                                border: Border.all(color: Colors.white12),
+                              ),
+                              child: IconButton(
+                                tooltip: 'Sync this page with partner',
+                                icon: const Icon(Icons.sync_alt_rounded, color: AppTheme.instaYellow, size: 18),
+                                onPressed: _syncCurrentPage,
+                              ),
+                            ),
+                            const SizedBox(width: 6),
+                            Container(
+                              decoration: BoxDecoration(
+                                color: Colors.black54,
+                                shape: BoxShape.circle,
+                                border: Border.all(color: Colors.white12),
+                              ),
+                              child: IconButton(
+                                icon: const Icon(Icons.more_vert_rounded, color: Colors.white, size: 20),
+                                onPressed: _showRoomDetailsModal,
+                              ),
+                            ),
+                          ],
                         ),
                       ],
                     ),
