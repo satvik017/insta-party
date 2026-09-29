@@ -40,7 +40,29 @@ class _WatchPartyScreenState extends State<WatchPartyScreen> {
     ]);
   }
 
+  bool get _canControl => SyncManager.instance.isHost || !_room.hostOnlyControl;
+
+  void _showHostOnlyNotice() {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Row(
+          children: [
+            Icon(Icons.lock_rounded, color: AppTheme.instaYellow, size: 18),
+            SizedBox(width: 8),
+            Expanded(
+              child: Text('Only the host can control playback & change reels'),
+            ),
+          ],
+        ),
+        duration: Duration(seconds: 2),
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
+  }
+
   void _handleLocalPlaybackChanged(bool isPlaying, double position) {
+    if (!_canControl) return;
     SyncManager.instance.service.updatePlayback(
       isPlaying: isPlaying,
       positionSeconds: position,
@@ -48,6 +70,26 @@ class _WatchPartyScreenState extends State<WatchPartyScreen> {
   }
 
   void _forceSync() async {
+    if (!_canControl) {
+      _webviewKey.currentState?.forceSync();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Row(
+              children: [
+                Icon(Icons.sync_rounded, color: Colors.white, size: 18),
+                SizedBox(width: 8),
+                Text('Re-aligning playback with host...'),
+              ],
+            ),
+            duration: Duration(seconds: 1),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+      return;
+    }
+
     final visibleCode = await _webviewKey.currentState?.detectAndSyncVisiblePost();
     if (visibleCode != null) {
       if (mounted) {
@@ -88,6 +130,10 @@ class _WatchPartyScreenState extends State<WatchPartyScreen> {
   }
 
   void _togglePlayPause() {
+    if (!_canControl) {
+      _showHostOnlyNotice();
+      return;
+    }
     final nextState = !_room.isPlaying;
     if (nextState) {
       _webviewKey.currentState?.triggerPlay();
@@ -97,12 +143,20 @@ class _WatchPartyScreenState extends State<WatchPartyScreen> {
   }
 
   void _seekDelta(double delta) async {
+    if (!_canControl) {
+      _showHostOnlyNotice();
+      return;
+    }
     final currentTime = await _webviewKey.currentState?.getCurrentVideoTime() ?? 0.0;
     final newTime = (currentTime + delta).clamp(0.0, 9999.0);
     _webviewKey.currentState?.triggerSeek(newTime);
   }
 
   void _handleWebviewReelChanged(String newUrl, String title) {
+    if (!_canControl) {
+      debugPrint('[WatchParty] Non-host attempted reel change; suppressed.');
+      return;
+    }
     if (newUrl != _room.currentReelUrl) {
       debugPrint('[WatchParty] Webview changed reel to $newUrl');
       SyncManager.instance.service.changeReel(
@@ -133,6 +187,25 @@ class _WatchPartyScreenState extends State<WatchPartyScreen> {
   }
 
   Future<void> _syncCurrentPage() async {
+    if (!_canControl) {
+      _webviewKey.currentState?.forceSync();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Row(
+              children: [
+                Icon(Icons.sync_rounded, color: Colors.white, size: 18),
+                SizedBox(width: 8),
+                Text('Re-aligning with host reel...'),
+              ],
+            ),
+            duration: Duration(seconds: 2),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+      return;
+    }
     final syncedUrl = await _webviewKey.currentState?.syncCurrentPageToPartner();
     if (mounted && syncedUrl != null) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -154,6 +227,10 @@ class _WatchPartyScreenState extends State<WatchPartyScreen> {
   }
 
   void _nextCuratedReel() {
+    if (!_canControl) {
+      _showHostOnlyNotice();
+      return;
+    }
     final reels = ReelItem.defaultCuratedReels;
     _currentCuratedIndex = (_currentCuratedIndex + 1) % reels.length;
     final nextReel = reels[_currentCuratedIndex];
@@ -164,6 +241,10 @@ class _WatchPartyScreenState extends State<WatchPartyScreen> {
   }
 
   void _openReelSelector() {
+    if (!_canControl) {
+      _showHostOnlyNotice();
+      return;
+    }
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
@@ -376,6 +457,7 @@ class _WatchPartyScreenState extends State<WatchPartyScreen> {
                       lastActionBy: _room.lastActionBy,
                       currentUserId: SyncManager.instance.userId,
                       isHost: isHost,
+                      canControl: _canControl,
                       onLocalPlaybackChanged: _handleLocalPlaybackChanged,
                       onReelChanged: _handleWebviewReelChanged,
                     ),

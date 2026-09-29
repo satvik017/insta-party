@@ -14,6 +14,7 @@ class SyncedInstaWebview extends StatefulWidget {
   final String lastActionBy;
   final String currentUserId;
   final bool isHost;
+  final bool canControl;
   final Function(bool isPlaying, double position)? onLocalPlaybackChanged;
   final Function(String newUrl, String title)? onReelChanged;
   final VoidCallback? onVideoLoaded;
@@ -27,6 +28,7 @@ class SyncedInstaWebview extends StatefulWidget {
     required this.lastActionBy,
     required this.currentUserId,
     required this.isHost,
+    this.canControl = true,
     this.onLocalPlaybackChanged,
     this.onReelChanged,
     this.onVideoLoaded,
@@ -43,6 +45,7 @@ class SyncedInstaWebviewState extends State<SyncedInstaWebview> {
   String _currentLoadedUrl = '';
   bool _useEmbedMode = true;
   bool _isLocallyInteracting = false;
+  bool _audioUnmuted = false;
   Timer? _interactionDebounce;
   Timer? _driftTimer;
   Timer? _heartbeatTimer;
@@ -69,24 +72,82 @@ class SyncedInstaWebviewState extends State<SyncedInstaWebview> {
           }
           return null;
         },
-        play: function() {
+        unmute: function() {
           var v = this.getVideo();
           if (v) {
             v.muted = false;
+            v.volume = 1.0;
+            try {
+              v.dispatchEvent(new Event('volumechange'));
+            } catch(e) {}
+          }
+          var selectors = [
+            'button[aria-label*="audio" i]',
+            'button[aria-label*="Audio" i]',
+            'button[aria-label*="sound" i]',
+            'button[aria-label*="Sound" i]',
+            'button[aria-label*="mute" i]',
+            'button[aria-label*="Mute" i]',
+            'button[aria-label*="volume" i]',
+            'button[aria-label*="Volume" i]',
+            '[data-testid*="audio" i]',
+            '[data-testid*="volume" i]',
+            '.video-audio-control',
+            '.audio-button',
+            'svg[aria-label*="Audio" i]',
+            'svg[aria-label*="Sound" i]'
+          ];
+          for (var s = 0; s < selectors.length; s++) {
+            var els = document.querySelectorAll(selectors[s]);
+            for (var i = 0; i < els.length; i++) {
+              try {
+                var btn = els[i].closest('button') || els[i];
+                btn.click();
+              } catch(e) {}
+            }
+          }
+          var iframes = document.querySelectorAll('iframe');
+          for (var j = 0; j < iframes.length; j++) {
+            try {
+              var idoc = iframes[j].contentDocument || iframes[j].contentWindow.document;
+              if (idoc) {
+                var iv = idoc.querySelector('video');
+                if (iv) {
+                  iv.muted = false;
+                  iv.volume = 1.0;
+                  try { iv.dispatchEvent(new Event('volumechange')); } catch(e) {}
+                }
+                var ibtns = idoc.querySelectorAll('button[aria-label*="audio" i], button[aria-label*="sound" i], button[aria-label*="mute" i]');
+                for (var k = 0; k < ibtns.length; k++) {
+                  try { ibtns[k].click(); } catch(e) {}
+                }
+              }
+            } catch(e) {}
+          }
+          return true;
+        },
+        play: function() {
+          var self = this;
+          var v = this.getVideo();
+          if (v) {
+            v.muted = false;
+            v.volume = 1.0;
             var p = v.play();
             if (p !== undefined) {
               p.catch(function(e) {
-                // If browser blocks unmuted autoplay, play muted
+                // If browser blocks unmuted autoplay, play muted then try unmute
                 v.muted = true;
                 v.play();
               });
             }
+            setTimeout(function() { self.unmute(); }, 350);
             return true;
           }
           // Fallback: click play button overlay if video element is covered
           var playBtn = document.querySelector('[aria-label="Play"], [aria-label*="play" i], .play-button, div[role="button"][tabindex="0"]');
           if (playBtn) {
             playBtn.click();
+            setTimeout(function() { self.unmute(); }, 350);
             return true;
           }
           return false;
@@ -313,6 +374,7 @@ class SyncedInstaWebviewState extends State<SyncedInstaWebview> {
               });
             }
             await _injectSyncScript();
+            await unmuteAudio();
             widget.onVideoLoaded?.call();
             _applySyncState();
             _handleUrlChanged(url);
@@ -344,6 +406,9 @@ class SyncedInstaWebviewState extends State<SyncedInstaWebview> {
       }
       if (!_isLoading && !_isLocallyInteracting && widget.lastActionBy != widget.currentUserId) {
         _applySyncState();
+        if (!widget.canControl) {
+          _ensureCorrectReelLoaded();
+        }
       }
     });
 
@@ -355,6 +420,7 @@ class SyncedInstaWebviewState extends State<SyncedInstaWebview> {
       }
       if (!_isLoading &&
           !_isLocallyInteracting &&
+          widget.canControl &&
           widget.isPlaying &&
           widget.lastActionBy == widget.currentUserId) {
         final time = await getCurrentVideoTime();
@@ -380,6 +446,10 @@ class SyncedInstaWebviewState extends State<SyncedInstaWebview> {
       final time = (data['time'] as num?)?.toDouble() ?? 0.0;
 
       if (type == 'url_changed' || type == 'visible_post_changed') {
+        if (!widget.canControl) {
+          // Guest cannot broadcast reel changes to the room
+          return;
+        }
         final shortcode = data['shortcode'] as String? ??
             ReelItem.extractShortcode(data['url'] as String? ?? '');
         if (shortcode != null && shortcode.isNotEmpty) {
@@ -399,9 +469,8 @@ class SyncedInstaWebviewState extends State<SyncedInstaWebview> {
         return;
       }
 
-      // Always report local video interactions to Firebase
-      // (skip only if currently handling via overlay controls to avoid double-fire)
-      if (!_isLocallyInteracting) {
+      // Only broadcast local video interactions if this user can control playback
+      if (!_isLocallyInteracting && widget.canControl) {
         if (type == 'play') {
           _notifyPlaybackChanged(true, time);
         } else if (type == 'pause') {
@@ -417,6 +486,21 @@ class SyncedInstaWebviewState extends State<SyncedInstaWebview> {
 
   void _handleUrlChanged(String url) {
     if (!mounted) return;
+
+    if (!widget.canControl) {
+      // If guest navigated away, restore host's reel
+      final shortcode = ReelItem.extractShortcode(url);
+      final hostShortcode = ReelItem.extractShortcode(widget.reelUrl);
+      if (shortcode != null && hostShortcode != null && shortcode != hostShortcode) {
+        debugPrint('[Sync] Guest navigated away to $shortcode; restoring host reel $hostShortcode');
+        final targetUrl = _useEmbedMode
+            ? ReelItem.formatToEmbedUrl(widget.reelUrl)
+            : ReelItem.formatToDirectUrl(widget.reelUrl);
+        _currentLoadedUrl = targetUrl;
+        _controller.loadRequest(Uri.parse(targetUrl));
+      }
+      return;
+    }
 
     // Check if the URL is an Instagram reel, video, or post
     final shortcode = ReelItem.extractShortcode(url);
@@ -508,6 +592,7 @@ class SyncedInstaWebviewState extends State<SyncedInstaWebview> {
     // If change was made by the partner (not me), synchronize playback
     if (widget.lastActionBy != widget.currentUserId) {
       _applySyncState();
+      unmuteAudio();
     }
   }
 
@@ -515,6 +600,7 @@ class SyncedInstaWebviewState extends State<SyncedInstaWebview> {
     try {
       if (widget.isPlaying) {
         await _controller.runJavaScript('window.reelSync && window.reelSync.play();');
+        await _controller.runJavaScript('window.reelSync && window.reelSync.unmute();');
       } else {
         await _controller.runJavaScript('window.reelSync && window.reelSync.pause();');
       }
@@ -567,6 +653,7 @@ class SyncedInstaWebviewState extends State<SyncedInstaWebview> {
   Future<void> triggerPlay() async {
     _isLocallyInteracting = true;
     await _controller.runJavaScript('window.reelSync && window.reelSync.play();');
+    await _controller.runJavaScript('window.reelSync && window.reelSync.unmute();');
     final time = await getCurrentVideoTime();
     _notifyPlaybackChanged(true, time);
   }
@@ -591,6 +678,37 @@ class SyncedInstaWebviewState extends State<SyncedInstaWebview> {
     await _injectSyncScript();
     await Future.delayed(const Duration(milliseconds: 200));
     await _applySyncState();
+    await unmuteAudio();
+  }
+
+  /// Explicitly un-mute video element & trigger Instagram sound toggles
+  Future<void> unmuteAudio() async {
+    try {
+      await _controller.runJavaScript('window.reelSync && window.reelSync.unmute();');
+      if (mounted && !_audioUnmuted) {
+        setState(() {
+          _audioUnmuted = true;
+        });
+      }
+    } catch (_) {}
+  }
+
+  /// Ensure guest remains on the host's selected reel
+  Future<void> _ensureCorrectReelLoaded() async {
+    try {
+      final res = await _controller.runJavaScriptReturningResult('window.location.href');
+      final cur = res.toString().replaceAll('"', '').trim();
+      final currentCode = ReelItem.extractShortcode(cur);
+      final targetCode = ReelItem.extractShortcode(widget.reelUrl);
+      if (currentCode != null && targetCode != null && currentCode != targetCode) {
+        debugPrint('[Sync] Restoring host reel on guest device ($currentCode -> $targetCode)');
+        final targetUrl = _useEmbedMode
+            ? ReelItem.formatToEmbedUrl(widget.reelUrl)
+            : ReelItem.formatToDirectUrl(widget.reelUrl);
+        _currentLoadedUrl = targetUrl;
+        _controller.loadRequest(Uri.parse(targetUrl));
+      }
+    } catch (_) {}
   }
 
   Future<double> getCurrentVideoTime() async {
@@ -630,10 +748,83 @@ class SyncedInstaWebviewState extends State<SyncedInstaWebview> {
   Widget build(BuildContext context) {
     return Stack(
       children: [
-        // Main In-App Instagram WebView
-        ClipRRect(
-          borderRadius: BorderRadius.circular(20),
-          child: WebViewWidget(controller: _controller),
+        // Main In-App Instagram WebView with gesture listener for immediate unmuting
+        Listener(
+          behavior: HitTestBehavior.translucent,
+          onPointerDown: (_) => unmuteAudio(),
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(20),
+            child: WebViewWidget(controller: _controller),
+          ),
+        ),
+
+        // Floating Unmute / Sound Status Button
+        Positioned(
+          top: 12,
+          right: 12,
+          child: Material(
+            color: Colors.transparent,
+            child: InkWell(
+              borderRadius: BorderRadius.circular(20),
+              onTap: () async {
+                await unmuteAudio();
+                if (!mounted || !context.mounted) return;
+                setState(() {
+                  _audioUnmuted = true;
+                });
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Row(
+                      children: [
+                        Icon(Icons.volume_up_rounded, color: Colors.greenAccent, size: 18),
+                        SizedBox(width: 8),
+                        Text('🔊 Sound enabled! Turn up device volume.'),
+                      ],
+                    ),
+                    duration: Duration(seconds: 2),
+                    behavior: SnackBarBehavior.floating,
+                  ),
+                );
+              },
+              child: AnimatedContainer(
+                duration: const Duration(milliseconds: 250),
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                decoration: BoxDecoration(
+                  color: Colors.black.withOpacity(0.8),
+                  borderRadius: BorderRadius.circular(20),
+                  border: Border.all(
+                    color: _audioUnmuted ? Colors.greenAccent.withOpacity(0.6) : AppTheme.instaRed,
+                    width: 1.5,
+                  ),
+                  boxShadow: [
+                    BoxShadow(
+                      color: (_audioUnmuted ? Colors.greenAccent : AppTheme.instaRed).withOpacity(0.3),
+                      blurRadius: 8,
+                    ),
+                  ],
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(
+                      _audioUnmuted ? Icons.volume_up_rounded : Icons.volume_off_rounded,
+                      color: _audioUnmuted ? Colors.greenAccent : AppTheme.instaYellow,
+                      size: 16,
+                    ),
+                    const SizedBox(width: 5),
+                    Text(
+                      _audioUnmuted ? 'Audio ON' : 'Tap for Sound 🔊',
+                      style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.bold,
+                        color: _audioUnmuted ? Colors.white : AppTheme.instaYellow,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
         ),
 
         // Linear loading progress indicator

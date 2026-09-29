@@ -80,7 +80,7 @@ class FirebaseSyncService implements SyncService {
       playbackPositionSeconds: 0.0,
       lastActionTimestamp: DateTime.now().millisecondsSinceEpoch,
       lastActionBy: _userId,
-      hostOnlyControl: false,
+      hostOnlyControl: true,
     );
 
     final ref = _roomRef(roomId);

@@ -26,7 +26,7 @@ class PartyRoom {
     this.playbackPositionSeconds = 0.0,
     required this.lastActionTimestamp,
     required this.lastActionBy,
-    this.hostOnlyControl = false,
+    this.hostOnlyControl = true,
     this.messages = const [],
     this.activeReactions = const [],
   });
@@ -114,7 +114,7 @@ class PartyRoom {
       playbackPositionSeconds: (map['playbackPositionSeconds'] as num?)?.toDouble() ?? 0.0,
       lastActionTimestamp: (map['lastActionTimestamp'] as num?)?.toInt() ?? DateTime.now().millisecondsSinceEpoch,
       lastActionBy: map['lastActionBy'] ?? '',
-      hostOnlyControl: map['hostOnlyControl'] ?? false,
+      hostOnlyControl: map['hostOnlyControl'] ?? true,
       messages: msgs,
     );
   }

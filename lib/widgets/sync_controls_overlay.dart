@@ -255,9 +255,12 @@ class SyncControlsOverlay extends StatelessWidget {
 
                   // Open Reels Library
                   IconButton(
-                    icon: const Icon(Icons.playlist_play_rounded, color: Colors.white),
-                    tooltip: 'Change Reel',
-                    onPressed: onOpenReelSelector,
+                    icon: Icon(
+                      Icons.playlist_play_rounded,
+                      color: canControl ? Colors.white : Colors.white38,
+                    ),
+                    tooltip: canControl ? 'Change Reel' : 'Host controls reel selection',
+                    onPressed: canControl ? onOpenReelSelector : () => _showHostNotice(context),
                   ),
 
                   // Open Chat
@@ -297,22 +300,24 @@ class SyncControlsOverlay extends StatelessWidget {
                 children: [
                   // Rewind 5s
                   IconButton(
-                    icon: const Icon(Icons.replay_5_rounded, color: Colors.white70, size: 26),
-                    onPressed: canControl ? () => onSeekDelta(-5) : null,
+                    icon: Icon(Icons.replay_5_rounded, color: canControl ? Colors.white70 : Colors.white24, size: 26),
+                    onPressed: canControl ? () => onSeekDelta(-5) : () => _showHostNotice(context),
                   ),
 
                   // Synced Play / Pause Button
                   GestureDetector(
-                    onTap: canControl ? onTogglePlay : null,
+                    onTap: canControl ? onTogglePlay : () => _showHostNotice(context),
                     child: Container(
                       width: 56,
                       height: 56,
                       decoration: BoxDecoration(
                         shape: BoxShape.circle,
-                        gradient: AppTheme.instaGradient,
+                        gradient: canControl
+                            ? AppTheme.instaGradient
+                            : const LinearGradient(colors: [Colors.grey, Colors.blueGrey]),
                         boxShadow: [
                           BoxShadow(
-                            color: AppTheme.instaRed.withOpacity(0.4),
+                            color: (canControl ? AppTheme.instaRed : Colors.black).withOpacity(0.4),
                             blurRadius: 12,
                             spreadRadius: 2,
                           ),
@@ -320,7 +325,7 @@ class SyncControlsOverlay extends StatelessWidget {
                       ),
                       child: Icon(
                         room.isPlaying ? Icons.pause_rounded : Icons.play_arrow_rounded,
-                        color: Colors.white,
+                        color: canControl ? Colors.white : Colors.white70,
                         size: 32,
                       ),
                     ),
@@ -328,31 +333,66 @@ class SyncControlsOverlay extends StatelessWidget {
 
                   // Forward 5s
                   IconButton(
-                    icon: const Icon(Icons.forward_5_rounded, color: Colors.white70, size: 26),
-                    onPressed: canControl ? () => onSeekDelta(5) : null,
+                    icon: Icon(Icons.forward_5_rounded, color: canControl ? Colors.white70 : Colors.white24, size: 26),
+                    onPressed: canControl ? () => onSeekDelta(5) : () => _showHostNotice(context),
                   ),
 
                   // Next Reel Button
                   IconButton(
-                    icon: const Icon(Icons.skip_next_rounded, color: Colors.white, size: 28),
-                    tooltip: 'Next Curated Reel',
-                    onPressed: canControl ? onNextReel : null,
+                    icon: Icon(Icons.skip_next_rounded, color: canControl ? Colors.white : Colors.white24, size: 28),
+                    tooltip: canControl ? 'Next Curated Reel' : 'Host controls playback',
+                    onPressed: canControl ? onNextReel : () => _showHostNotice(context),
                   ),
                 ],
               ),
 
               if (room.hostOnlyControl && !isHost)
-                const Padding(
-                  padding: EdgeInsets.only(top: 6),
-                  child: Text(
-                    '🔒 Host only control is active',
-                    style: TextStyle(fontSize: 11, color: AppTheme.textMuted),
+                Container(
+                  margin: const EdgeInsets.only(top: 8),
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: Colors.amber.withOpacity(0.15),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: Colors.amber.withOpacity(0.3)),
+                  ),
+                  child: const Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(Icons.lock_rounded, size: 12, color: AppTheme.instaYellow),
+                      SizedBox(width: 6),
+                      Text(
+                        'Host-Only Control Active (Host leads the watch party)',
+                        style: TextStyle(
+                          fontSize: 11,
+                          color: AppTheme.instaYellow,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ],
                   ),
                 ),
             ],
           ),
         ),
       ],
+    );
+  }
+
+  void _showHostNotice(BuildContext context) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Row(
+          children: [
+            Icon(Icons.lock_rounded, color: AppTheme.instaYellow, size: 18),
+            SizedBox(width: 8),
+            Expanded(
+              child: Text('Host-only control is active. Only the room creator can control playback.'),
+            ),
+          ],
+        ),
+        duration: Duration(seconds: 2),
+        behavior: SnackBarBehavior.floating,
+      ),
     );
   }
 }
