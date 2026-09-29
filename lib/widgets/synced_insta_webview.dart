@@ -153,13 +153,67 @@ class SyncedInstaWebviewState extends State<SyncedInstaWebview> {
               }
             });
           }
+        },
+        getVisiblePostShortcode: function() {
+          // 1. Direct match in current URL
+          var urlMatch = window.location.href.match(/(?:reel|reels|p|tv)\/([A-Za-z0-9_-]+)/);
+          if (urlMatch && urlMatch[1]) {
+            return urlMatch[1];
+          }
+
+          // 2. Visible article in viewport center (feed scrolling)
+          var viewCenterY = window.innerHeight / 2;
+          var articles = document.querySelectorAll('article');
+          var bestCode = null;
+          var minDistance = Infinity;
+
+          for (var i = 0; i < articles.length; i++) {
+            var rect = articles[i].getBoundingClientRect();
+            if (rect.bottom > 60 && rect.top < window.innerHeight - 60) {
+              var centerY = (rect.top + rect.bottom) / 2;
+              var dist = Math.abs(centerY - viewCenterY);
+              if (dist < minDistance) {
+                minDistance = dist;
+                var link = articles[i].querySelector('a[href*="/reel/"], a[href*="/reels/"], a[href*="/p/"], a[href*="/tv/"]');
+                if (link) {
+                  var m = (link.getAttribute('href') || link.href).match(/(?:reel|reels|p|tv)\/([A-Za-z0-9_-]+)/);
+                  if (m && m[1]) bestCode = m[1];
+                }
+              }
+            }
+          }
+
+          if (bestCode) return bestCode;
+
+          // 3. Fallback: query visible links with shortcodes
+          var links = document.querySelectorAll('a[href*="/reel/"], a[href*="/p/"]');
+          for (var j = 0; j < links.length; j++) {
+            var lRect = links[j].getBoundingClientRect();
+            if (lRect.bottom > 50 && lRect.top < window.innerHeight - 50) {
+              var lm = (links[j].getAttribute('href') || links[j].href).match(/(?:reel|reels|p|tv)\/([A-Za-z0-9_-]+)/);
+              if (lm && lm[1]) return lm[1];
+            }
+          }
+
+          return null;
         }
       };
       
-      // Auto-watch for video DOM element
+      // Auto-watch for video DOM element & active visible post
       setInterval(function() {
         if (window.reelSync) {
           window.reelSync.bindEvents();
+          var code = window.reelSync.getVisiblePostShortcode();
+          if (code && code !== window._lastVisibleCode) {
+            window._lastVisibleCode = code;
+            if (window.ReelSyncBridge) {
+              window.ReelSyncBridge.postMessage(JSON.stringify({
+                type: 'visible_post_changed',
+                shortcode: code,
+                url: 'https://www.instagram.com/reel/' + code + '/'
+              }));
+            }
+          }
         }
       }, 1000);
 
@@ -325,10 +379,22 @@ class SyncedInstaWebviewState extends State<SyncedInstaWebview> {
       final type = data['type'] as String?;
       final time = (data['time'] as num?)?.toDouble() ?? 0.0;
 
-      if (type == 'url_changed') {
-        final url = data['url'] as String?;
-        if (url != null && url.isNotEmpty) {
-          _handleUrlChanged(url);
+      if (type == 'url_changed' || type == 'visible_post_changed') {
+        final shortcode = data['shortcode'] as String? ??
+            ReelItem.extractShortcode(data['url'] as String? ?? '');
+        if (shortcode != null && shortcode.isNotEmpty) {
+          final cleanReelUrl = 'https://www.instagram.com/reel/$shortcode/';
+          final currentShortcode = ReelItem.extractShortcode(widget.reelUrl);
+          if (shortcode != currentShortcode) {
+            debugPrint('[Sync] Visible post / URL changed on screen: $shortcode (was $currentShortcode)');
+            _currentLoadedUrl = cleanReelUrl;
+            widget.onReelChanged?.call(cleanReelUrl, 'Instagram Reel ($shortcode)');
+          }
+        } else {
+          final url = data['url'] as String?;
+          if (url != null && url.isNotEmpty) {
+            _handleUrlChanged(url);
+          }
         }
         return;
       }
@@ -365,6 +431,25 @@ class SyncedInstaWebviewState extends State<SyncedInstaWebview> {
         widget.onReelChanged?.call(cleanReelUrl, 'Instagram Reel ($shortcode)');
       }
     }
+  }
+
+  /// Detect which post is visible in the viewport center and sync to partner
+  Future<String?> detectAndSyncVisiblePost() async {
+    try {
+      final res = await _controller.runJavaScriptReturningResult(
+        'window.reelSync ? window.reelSync.getVisiblePostShortcode() : null',
+      );
+      final raw = res.toString().replaceAll('"', '').trim();
+      if (raw.isNotEmpty && raw != 'null' && raw != 'undefined') {
+        final syncUrl = 'https://www.instagram.com/reel/$raw/';
+        debugPrint('[Sync] detectAndSyncVisiblePost found: $raw -> $syncUrl');
+        widget.onReelChanged?.call(syncUrl, 'Instagram Reel ($raw)');
+        return raw;
+      }
+    } catch (e) {
+      debugPrint('[Sync] Error detecting visible post: $e');
+    }
+    return null;
   }
 
   /// Sync whatever page the webview is currently displaying to the partner
@@ -457,17 +542,21 @@ class SyncedInstaWebviewState extends State<SyncedInstaWebview> {
       );
       final rawDuration = durationResult.toString().replaceAll('"', '').trim();
       final duration = double.tryParse(rawDuration) ?? 0.0;
-      if (duration > 1.0 && expectedPosition > duration) {
-        expectedPosition = expectedPosition % duration;
-      }
+      // Only apply drift compensation if video actually exists and has duration!
+      if (duration > 0.5) {
+        if (expectedPosition > duration) {
+          expectedPosition = expectedPosition % duration;
+        }
 
-      // Drift threshold: 1.5 seconds
-      final drift = (currentLocalTime - expectedPosition).abs();
-      if (drift > 1.5 && expectedPosition >= 0) {
-        debugPrint('[Sync] Correcting drift: local=${currentLocalTime}s, target=${expectedPosition.toStringAsFixed(2)}s');
-        await _controller.runJavaScript(
-          'window.reelSync && window.reelSync.seekTo(${expectedPosition.toStringAsFixed(2)});',
-        );
+        // Drift threshold: 1.5 seconds
+        final drift = (currentLocalTime - expectedPosition).abs();
+        if (drift > 1.5 && expectedPosition >= 0) {
+          debugPrint(
+              '[Sync] Correcting drift: local=${currentLocalTime}s, target=${expectedPosition.toStringAsFixed(2)}s, dur=${duration}s');
+          await _controller.runJavaScript(
+            'window.reelSync && window.reelSync.seekTo(${expectedPosition.toStringAsFixed(2)});',
+          );
+        }
       }
     } catch (e) {
       debugPrint('[Sync] Apply sync error: $e');
@@ -560,42 +649,6 @@ class SyncedInstaWebviewState extends State<SyncedInstaWebview> {
               minHeight: 3,
             ),
           ),
-
-        // Embed vs Web mode switch pill at top-right
-        Positioned(
-          top: 12,
-          right: 12,
-          child: Container(
-            decoration: BoxDecoration(
-              color: Colors.black.withOpacity(0.65),
-              borderRadius: BorderRadius.circular(20),
-              border: Border.all(color: Colors.white.withOpacity(0.15)),
-            ),
-            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(
-                  _useEmbedMode ? Icons.aspect_ratio : Icons.public,
-                  size: 13,
-                  color: AppTheme.instaYellow,
-                ),
-                const SizedBox(width: 4),
-                GestureDetector(
-                  onTap: toggleEmbedMode,
-                  child: Text(
-                    _useEmbedMode ? 'Embed View' : 'Full Web',
-                    style: const TextStyle(
-                      fontSize: 11,
-                      fontWeight: FontWeight.w600,
-                      color: Colors.white,
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ),
 
         // Loading overlay spinner if still initializing
         if (_isLoading && _loadProgress < 0.3)

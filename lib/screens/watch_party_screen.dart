@@ -47,21 +47,44 @@ class _WatchPartyScreenState extends State<WatchPartyScreen> {
     );
   }
 
-  void _forceSync() {
-    _webviewKey.currentState?.forceSync();
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Row(
-          children: [
-            Icon(Icons.sync_rounded, color: Colors.white, size: 18),
-            SizedBox(width: 8),
-            Text('Syncing playback with partner...'),
-          ],
-        ),
-        duration: Duration(seconds: 1),
-        behavior: SnackBarBehavior.floating,
-      ),
-    );
+  void _forceSync() async {
+    final visibleCode = await _webviewKey.currentState?.detectAndSyncVisiblePost();
+    if (visibleCode != null) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Row(
+              children: [
+                const Icon(Icons.share_rounded, color: Colors.greenAccent, size: 18),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text('Broadcasting post to partner: $visibleCode'),
+                ),
+              ],
+            ),
+            duration: const Duration(seconds: 2),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+    } else {
+      _webviewKey.currentState?.forceSync();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Row(
+              children: [
+                Icon(Icons.sync_rounded, color: Colors.white, size: 18),
+                SizedBox(width: 8),
+                Text('Aligning playback with partner...'),
+              ],
+            ),
+            duration: Duration(seconds: 1),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+    }
   }
 
   void _togglePlayPause() {
