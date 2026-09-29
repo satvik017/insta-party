@@ -47,6 +47,23 @@ class _WatchPartyScreenState extends State<WatchPartyScreen> {
     );
   }
 
+  void _forceSync() {
+    _webviewKey.currentState?.forceSync();
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Row(
+          children: [
+            Icon(Icons.sync_rounded, color: Colors.white, size: 18),
+            SizedBox(width: 8),
+            Text('Syncing playback with partner...'),
+          ],
+        ),
+        duration: Duration(seconds: 1),
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
+  }
+
   void _togglePlayPause() {
     final nextState = !_room.isPlaying;
     if (nextState) {
@@ -54,20 +71,12 @@ class _WatchPartyScreenState extends State<WatchPartyScreen> {
     } else {
       _webviewKey.currentState?.triggerPause();
     }
-    SyncManager.instance.service.updatePlayback(
-      isPlaying: nextState,
-      positionSeconds: _room.playbackPositionSeconds,
-    );
   }
 
   void _seekDelta(double delta) async {
     final currentTime = await _webviewKey.currentState?.getCurrentVideoTime() ?? 0.0;
     final newTime = (currentTime + delta).clamp(0.0, 9999.0);
     _webviewKey.currentState?.triggerSeek(newTime);
-    SyncManager.instance.service.updatePlayback(
-      isPlaying: _room.isPlaying,
-      positionSeconds: newTime,
-    );
   }
 
   void _nextCuratedReel() {
@@ -374,6 +383,7 @@ class _WatchPartyScreenState extends State<WatchPartyScreen> {
                       onOpenReelSelector: _openReelSelector,
                       onOpenChat: _openChatSheet,
                       onSendReaction: _sendReaction,
+                      onForceSync: _forceSync,
                     ),
                   ),
               ],

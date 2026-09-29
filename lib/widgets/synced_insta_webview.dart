@@ -42,6 +42,8 @@ class SyncedInstaWebviewState extends State<SyncedInstaWebview> {
   bool _useEmbedMode = true;
   bool _isLocallyInteracting = false;
   Timer? _interactionDebounce;
+  Timer? _driftTimer;
+  Timer? _heartbeatTimer;
   Timer? _jsWatcherTimer;
 
   static const String _syncJsScript = '''
@@ -49,7 +51,21 @@ class SyncedInstaWebviewState extends State<SyncedInstaWebview> {
       if (window.reelSync) return;
       window.reelSync = {
         getVideo: function() {
-          return document.querySelector('video');
+          // Direct video tag
+          var v = document.querySelector('video');
+          if (v) return v;
+          // Check inside iframes
+          var iframes = document.querySelectorAll('iframe');
+          for (var i = 0; i < iframes.length; i++) {
+            try {
+              var doc = iframes[i].contentDocument || iframes[i].contentWindow.document;
+              if (doc) {
+                var iv = doc.querySelector('video');
+                if (iv) return iv;
+              }
+            } catch(e) {}
+          }
+          return null;
         },
         play: function() {
           var v = this.getVideo();
@@ -58,10 +74,17 @@ class SyncedInstaWebviewState extends State<SyncedInstaWebview> {
             var p = v.play();
             if (p !== undefined) {
               p.catch(function(e) {
+                // If browser blocks unmuted autoplay, play muted
                 v.muted = true;
                 v.play();
               });
             }
+            return true;
+          }
+          // Fallback: click play button overlay if video element is covered
+          var playBtn = document.querySelector('[aria-label="Play"], [aria-label*="play" i], .play-button, div[role="button"][tabindex="0"]');
+          if (playBtn) {
+            playBtn.click();
             return true;
           }
           return false;
@@ -72,11 +95,16 @@ class SyncedInstaWebviewState extends State<SyncedInstaWebview> {
             v.pause();
             return true;
           }
+          var pauseBtn = document.querySelector('[aria-label="Pause"], [aria-label*="pause" i]');
+          if (pauseBtn) {
+            pauseBtn.click();
+            return true;
+          }
           return false;
         },
         seekTo: function(seconds) {
           var v = this.getVideo();
-          if (v) {
+          if (v && Number.isFinite(seconds)) {
             v.currentTime = seconds;
             return true;
           }
@@ -84,7 +112,11 @@ class SyncedInstaWebviewState extends State<SyncedInstaWebview> {
         },
         getCurrentTime: function() {
           var v = this.getVideo();
-          return v ? v.currentTime : 0;
+          return (v && Number.isFinite(v.currentTime)) ? v.currentTime : 0;
+        },
+        getDuration: function() {
+          var v = this.getVideo();
+          return (v && Number.isFinite(v.duration)) ? v.duration : 0;
         },
         isPaused: function() {
           var v = this.getVideo();
@@ -106,6 +138,14 @@ class SyncedInstaWebviewState extends State<SyncedInstaWebview> {
               if (window.ReelSyncBridge) {
                 window.ReelSyncBridge.postMessage(JSON.stringify({
                   type: 'pause',
+                  time: v.currentTime
+                }));
+              }
+            });
+            v.addEventListener('seeked', function() {
+              if (window.ReelSyncBridge) {
+                window.ReelSyncBridge.postMessage(JSON.stringify({
+                  type: 'seek',
                   time: v.currentTime
                 }));
               }
@@ -182,10 +222,38 @@ class SyncedInstaWebviewState extends State<SyncedInstaWebview> {
     _controller = controller;
     _controller.loadRequest(Uri.parse(effectiveUrl));
 
-    // Periodic check to keep video injected and synchronized
+    // Periodic JS injection to keep sync bridge alive (every 3s)
     _jsWatcherTimer = Timer.periodic(const Duration(seconds: 3), (timer) {
       if (mounted && !_isLoading) {
         _injectSyncScript();
+      }
+    });
+
+    // Periodic drift check every 4 seconds — auto-correct if partner changed state
+    _driftTimer = Timer.periodic(const Duration(seconds: 4), (timer) {
+      if (!mounted) {
+        timer.cancel();
+        return;
+      }
+      if (!_isLoading && !_isLocallyInteracting && widget.lastActionBy != widget.currentUserId) {
+        _applySyncState();
+      }
+    });
+
+    // Periodic heartbeat from the actively controlling device every 4 seconds
+    _heartbeatTimer = Timer.periodic(const Duration(seconds: 4), (timer) async {
+      if (!mounted) {
+        timer.cancel();
+        return;
+      }
+      if (!_isLoading &&
+          !_isLocallyInteracting &&
+          widget.isPlaying &&
+          widget.lastActionBy == widget.currentUserId) {
+        final time = await getCurrentVideoTime();
+        if (time > 0) {
+          widget.onLocalPlaybackChanged?.call(true, time);
+        }
       }
     });
   }
@@ -204,12 +272,15 @@ class SyncedInstaWebviewState extends State<SyncedInstaWebview> {
       final type = data['type'] as String?;
       final time = (data['time'] as num?)?.toDouble() ?? 0.0;
 
-      // If user directly clicked play/pause inside the Instagram webview
-      if (!_isLocallyInteracting && widget.lastActionBy != widget.currentUserId) {
+      // Always report local video interactions to Firebase
+      // (skip only if currently handling via overlay controls to avoid double-fire)
+      if (!_isLocallyInteracting) {
         if (type == 'play') {
           _notifyPlaybackChanged(true, time);
         } else if (type == 'pause') {
           _notifyPlaybackChanged(false, time);
+        } else if (type == 'seek') {
+          _notifyPlaybackChanged(widget.isPlaying, time);
         }
       }
     } catch (e) {
@@ -257,21 +328,43 @@ class SyncedInstaWebviewState extends State<SyncedInstaWebview> {
         await _controller.runJavaScript('window.reelSync && window.reelSync.pause();');
       }
 
-      // Check drift compensation
+      // Check current local time
       final currentTimeResult = await _controller.runJavaScriptReturningResult(
         'window.reelSync ? window.reelSync.getCurrentTime() : 0',
       );
-      final currentLocalTime = double.tryParse(currentTimeResult.toString()) ?? 0.0;
+      final rawCurrent = currentTimeResult.toString().replaceAll('"', '').trim();
+      final currentLocalTime = double.tryParse(rawCurrent) ?? 0.0;
 
-      // If drift is greater than 1.5 seconds, sync seek position
-      final drift = (currentLocalTime - widget.syncPositionSeconds).abs();
-      if (drift > 1.5 && widget.syncPositionSeconds > 0) {
+      // Calculate expected position factoring in elapsed time if playing
+      double expectedPosition = widget.syncPositionSeconds;
+      if (widget.isPlaying && widget.lastActionTimestamp > 0) {
+        final elapsed =
+            (DateTime.now().millisecondsSinceEpoch - widget.lastActionTimestamp) / 1000.0;
+        if (elapsed > 0 && elapsed < 3600) {
+          expectedPosition += elapsed;
+        }
+      }
+
+      // Check video duration for looping reels
+      final durationResult = await _controller.runJavaScriptReturningResult(
+        'window.reelSync ? window.reelSync.getDuration() : 0',
+      );
+      final rawDuration = durationResult.toString().replaceAll('"', '').trim();
+      final duration = double.tryParse(rawDuration) ?? 0.0;
+      if (duration > 1.0 && expectedPosition > duration) {
+        expectedPosition = expectedPosition % duration;
+      }
+
+      // Drift threshold: 1.5 seconds
+      final drift = (currentLocalTime - expectedPosition).abs();
+      if (drift > 1.5 && expectedPosition >= 0) {
+        debugPrint('[Sync] Correcting drift: local=${currentLocalTime}s, target=${expectedPosition.toStringAsFixed(2)}s');
         await _controller.runJavaScript(
-          'window.reelSync && window.reelSync.seekTo(${widget.syncPositionSeconds});',
+          'window.reelSync && window.reelSync.seekTo(${expectedPosition.toStringAsFixed(2)});',
         );
       }
     } catch (e) {
-      debugPrint('Sync apply error: $e');
+      debugPrint('[Sync] Apply sync error: $e');
     }
   }
 
@@ -296,12 +389,22 @@ class SyncedInstaWebviewState extends State<SyncedInstaWebview> {
     _notifyPlaybackChanged(widget.isPlaying, seconds);
   }
 
+  /// Force sync: seek to the Firebase position and apply play/pause state.
+  /// Call this when the user explicitly wants to re-align with their partner.
+  Future<void> forceSync() async {
+    debugPrint('[Sync] Force sync requested — target=${widget.syncPositionSeconds}s');
+    await _injectSyncScript();
+    await Future.delayed(const Duration(milliseconds: 200));
+    await _applySyncState();
+  }
+
   Future<double> getCurrentVideoTime() async {
     try {
       final res = await _controller.runJavaScriptReturningResult(
         'window.reelSync ? window.reelSync.getCurrentTime() : 0',
       );
-      return double.tryParse(res.toString()) ?? 0.0;
+      final clean = res.toString().replaceAll('"', '').trim();
+      return double.tryParse(clean) ?? 0.0;
     } catch (_) {
       return 0.0;
     }
@@ -323,6 +426,8 @@ class SyncedInstaWebviewState extends State<SyncedInstaWebview> {
   void dispose() {
     _interactionDebounce?.cancel();
     _jsWatcherTimer?.cancel();
+    _driftTimer?.cancel();
+    _heartbeatTimer?.cancel();
     super.dispose();
   }
 

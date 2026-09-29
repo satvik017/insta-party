@@ -13,6 +13,7 @@ class SyncControlsOverlay extends StatelessWidget {
   final VoidCallback onOpenReelSelector;
   final VoidCallback onOpenChat;
   final Function(String emoji) onSendReaction;
+  final VoidCallback onForceSync;
 
   const SyncControlsOverlay({
     super.key,
@@ -25,6 +26,7 @@ class SyncControlsOverlay extends StatelessWidget {
     required this.onOpenReelSelector,
     required this.onOpenChat,
     required this.onSendReaction,
+    required this.onForceSync,
   });
 
   bool get canControl => !room.hostOnlyControl || isHost;
@@ -160,9 +162,51 @@ class SyncControlsOverlay extends StatelessWidget {
           ),
         ),
 
-        const SizedBox(height: 10),
+        const SizedBox(height: 8),
 
-        // Main Synced Playback HUD
+        // SYNC NOW button — forces both users to realign playback
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16),
+          child: GestureDetector(
+            onTap: onForceSync,
+            child: Container(
+              width: double.infinity,
+              padding: const EdgeInsets.symmetric(vertical: 9),
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(30),
+                gradient: const LinearGradient(
+                  colors: [Color(0xFF00C6FF), Color(0xFF7B2FF7)],
+                ),
+                boxShadow: [
+                  BoxShadow(
+                    color: const Color(0xFF7B2FF7).withOpacity(0.4),
+                    blurRadius: 12,
+                    spreadRadius: 1,
+                  ),
+                ],
+              ),
+              child: const Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(Icons.sync_rounded, color: Colors.white, size: 16),
+                  SizedBox(width: 8),
+                  Text(
+                    'SYNC NOW',
+                    style: TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.bold,
+                      letterSpacing: 1.2,
+                      color: Colors.white,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+
+        const SizedBox(height: 8),
+
         Container(
           margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
