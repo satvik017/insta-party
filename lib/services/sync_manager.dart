@@ -41,18 +41,26 @@ class SyncManager extends ChangeNotifier {
     await prefs.setString('user_id', _userId);
     await prefs.setString('user_name', _userName);
 
-    // Try detecting Firebase with project options
+    // Try initializing Firebase. On Android, FirebaseInitProvider may have
+    // already initialized it — catch duplicate-app and treat it as success.
     try {
-      if (Firebase.apps.isNotEmpty) {
+      await Firebase.initializeApp(
+        options: DefaultFirebaseOptions.currentPlatform,
+      );
+      _isFirebaseAvailable = true;
+      debugPrint('[SyncManager] Firebase initialized successfully.');
+    } on FirebaseException catch (e) {
+      if (e.code == 'duplicate-app') {
+        // Firebase was already initialized by Android's FirebaseInitProvider
+        // This is NOT an error — Firebase IS available.
         _isFirebaseAvailable = true;
+        debugPrint('[SyncManager] Firebase already initialized (duplicate-app) — using existing instance.');
       } else {
-        await Firebase.initializeApp(
-          options: DefaultFirebaseOptions.currentPlatform,
-        );
-        _isFirebaseAvailable = true;
+        debugPrint('[SyncManager] Firebase init failed: ${e.code} — ${e.message}');
+        _isFirebaseAvailable = false;
       }
     } catch (e) {
-      debugPrint('Firebase initialization note: $e');
+      debugPrint('[SyncManager] Firebase init error: $e');
       _isFirebaseAvailable = false;
     }
 
